@@ -27,6 +27,10 @@ its values::
 
     $ ./manage.py waffle_flag name-of-my-flag --deactivate --create
 
+Prerequisites can be set with a JSON expression::
+
+    $ ./manage.py waffle_flag new-payments --prerequisites '{"all": ["base-checkout", {"flag": "legacy-checkout", "active": false}]}'
+
 To list all the existing flags, use ``-l``::
 
     $ ./manage.py waffle_flag -l

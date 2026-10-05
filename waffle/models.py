@@ -7,6 +7,7 @@ from typing import Any, TypeVar
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, Group
+from django.core.exceptions import ValidationError
 from django.db import models, router, transaction
 from django.http import HttpRequest
 from django.utils import timezone
@@ -17,6 +18,14 @@ from waffle import (
     get_waffle_switch_model,
     get_waffle_flag_model,
     managers,
+)
+from waffle.prerequisites import (
+    CircularFlagDependencyError,
+    InvalidPrerequisiteError,
+    UNKNOWN_PREREQUISITE,
+    evaluate_prerequisites,
+    get_prerequisite_flag_names,
+    parse_prerequisites,
 )
 from waffle.utils import get_setting, keyfmt, get_cache
 
@@ -194,6 +203,16 @@ class AbstractBaseFlag(BaseModel):
         help_text=_('Note where this Flag is used.'),
         verbose_name=_('Note'),
     )
+    prerequisites = models.JSONField(
+        blank=True,
+        default=dict,
+        help_text=_(
+            'Boolean expression of flags that must be active before this flag is evaluated. '
+            'Examples: "base", {"flag": "base", "active": false}, '
+            '{"all": ["base", {"any": [{"flag": "a", "active": false}, "b"]}]}.'
+        ),
+        verbose_name=_('Prerequisites'),
+    )
     created = models.DateTimeField(
         default=timezone.now,
         db_index=True,
@@ -215,6 +234,77 @@ class AbstractBaseFlag(BaseModel):
         abstract = True
         verbose_name = _('Flag')
         verbose_name_plural = _('Flags')
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        update_fields = kwargs.get('update_fields')
+        if not kwargs.get('raw') and (
+            not self.pk or update_fields is None or 'prerequisites' in update_fields
+        ):
+            self.validate_prerequisites()
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        super().clean()
+        self.validate_prerequisites()
+
+    def validate_prerequisites(self) -> None:
+        try:
+            parse_prerequisites(self.prerequisites)
+        except InvalidPrerequisiteError as exc:
+            raise ValidationError({'prerequisites': str(exc)}) from exc
+
+        references = get_prerequisite_flag_names(self.prerequisites)
+        existing = set(
+            type(self).objects.exclude(name=self.name).values_list('name', flat=True)
+        )
+        unknown = references - existing - {self.name}
+        if unknown:
+            raise ValidationError({
+                'prerequisites': _(
+                    'Unknown prerequisite flag(s): %(names)s'
+                ) % {'names': ', '.join(sorted(unknown))}
+            })
+
+        expressions = dict(
+            type(self).objects.exclude(name=self.name).values_list(
+                'name', 'prerequisites'
+            )
+        )
+        expressions[self.name] = self.prerequisites
+
+        def edges(flag_name: str) -> set[str]:
+            try:
+                return get_prerequisite_flag_names(expressions.get(flag_name))
+            except InvalidPrerequisiteError:
+                return set()
+
+        gray = 1
+        black = 2
+        colors: dict[str, int] = {}
+        stack: list[tuple[str, Any]] = [(self.name, iter(edges(self.name)))]
+        colors[self.name] = gray
+
+        while stack:
+            flag_name, children = stack[-1]
+            child_name = next(children, None)
+            if child_name is None:
+                colors[flag_name] = black
+                stack.pop()
+                continue
+
+            child_color = colors.get(child_name)
+            if child_color == gray:
+                current_path = [node_name for node_name, _children in stack]
+                cycle_start = current_path.index(child_name)
+                cycle_path = current_path[cycle_start:] + [child_name]
+                raise ValidationError({
+                    'prerequisites': _(
+                        'Circular prerequisite dependency: %(path)s'
+                    ) % {'path': ' -> '.join(cycle_path)}
+                })
+            if child_color != black:
+                colors[child_name] = gray
+                stack.append((child_name, iter(edges(child_name))))
 
     def flush(self) -> None:
         cache = get_cache()
@@ -282,6 +372,9 @@ class AbstractBaseFlag(BaseModel):
         return None
 
     def is_active(self, request: HttpRequest, read_only: bool = False) -> bool | None:
+        if request is None:
+            return False
+
         if not self.pk:
             log_level = get_setting('LOG_MISSING_FLAGS')
             if log_level:
@@ -298,6 +391,79 @@ class AbstractBaseFlag(BaseModel):
 
             return get_setting('FLAG_DEFAULT')
 
+        context = self._get_prerequisite_context(request)
+        if self.name in context['evaluating']:
+            path = list(context['path'])
+            raise CircularFlagDependencyError(self.name, path)
+
+        context['evaluating'].add(self.name)
+        context['path'].append(self.name)
+        try:
+            active = self._is_active_with_prerequisites(request, read_only, context)
+        finally:
+            context['path'].pop()
+            context['evaluating'].remove(self.name)
+        return active
+
+    def _get_prerequisite_context(self, request: HttpRequest) -> dict[str, Any]:
+        if not hasattr(request, '_waffle_prerequisite_context'):
+            request._waffle_prerequisite_context = {
+                'results': {},
+                'evaluating': set(),
+                'path': [],
+            }
+        return request._waffle_prerequisite_context
+
+    def _is_active_with_prerequisites(
+        self,
+        request: HttpRequest,
+        read_only: bool,
+        context: dict[str, Any],
+    ) -> bool | None:
+        def resolve_prerequisite(flag_name: str) -> bool | object:
+            prerequisite = type(self).get(flag_name)
+            if not prerequisite.pk:
+                log_level = get_setting('LOG_MISSING_FLAGS')
+                if log_level:
+                    logger.log(log_level, 'Prerequisite flag %s not found', flag_name)
+                return UNKNOWN_PREREQUISITE
+
+            cache_key = (flag_name, read_only)
+            if cache_key in context['results']:
+                return context['results'][cache_key]
+            if flag_name in context['evaluating']:
+                path = list(context['path'])
+                raise CircularFlagDependencyError(flag_name, path)
+
+            context['evaluating'].add(flag_name)
+            context['path'].append(flag_name)
+            try:
+                active = prerequisite._is_active_with_prerequisites(
+                    request, read_only, context
+                )
+            finally:
+                context['path'].pop()
+                context['evaluating'].remove(flag_name)
+            context['results'][cache_key] = active
+            return active
+
+        prerequisites_active = evaluate_prerequisites(
+            self.prerequisites, resolve_prerequisite
+        )
+        if prerequisites_active is UNKNOWN_PREREQUISITE:
+            logger.warning(
+                'Flag %s is inactive because a prerequisite flag is unknown',
+                self.name,
+            )
+            return False
+        if not prerequisites_active:
+            return False
+
+        return self._is_active_without_prerequisites(request, read_only)
+
+    def _is_active_without_prerequisites(
+        self, request: HttpRequest, read_only: bool
+    ) -> bool | None:
         if get_setting('OVERRIDE'):
             if self.name in request.GET:
                 return request.GET[self.name] == '1'

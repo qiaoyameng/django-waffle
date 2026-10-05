@@ -23,8 +23,10 @@ The :ref:`flag_is_active <usage-views>` function takes two arguments, the
 request, and the name of a flag. Assuming this flag (``foo``) is defined
 in the database, Waffle will make roughly the following decisions:
 
-- Is ``WAFFLE_OVERRIDE`` active and if so does this request specify a
-  value for this flag? If so, use that value.
+- Are the flag's prerequisites satisfied? If not, the flag is
+  inactive before any other rule is evaluated.
+- If so, is ``WAFFLE_OVERRIDE`` active and if so does this request
+  specify a value for this flag? If so, use that value.
 - If not, is the flag set to globally on or off (the *Everyone*
   setting)? If so, use that value.
 - If not, is the flag in *Testing* mode, and does the request specify a
@@ -71,12 +73,66 @@ Flags can be administered through the Django `admin site`_ or the
     Activate Rollout mode? :ref:`See below <types-flag-rollout>`.
 :note:
     Describe where the flag is used.
+:prerequisites:
+    A boolean expression of other flags that must be satisfied before
+    the rest of this flag is evaluated.
 
 A Flag will be active if *any* of the criteria are true for the current
 user or request (i.e. they are combined with ``or``). For example, if a
 Flag is active for superusers, a specific group, and 12% of visitors,
 then it will be active if the current user is a superuser *or* if they
 are in the group *or* if they are in the 12%.
+
+
+Flag Prerequisites
+==================
+
+Prerequisites are stored as JSON. A bare string means that the named
+flag must be active::
+
+    "base_checkout"
+
+To require that a flag is inactive, use an object with ``active`` set
+to ``false``::
+
+    {"flag": "legacy_checkout", "active": false}
+
+Conditions can be combined with ``all`` (AND), ``any`` (OR), and
+``not`` (NOT). For example, the new payments flag can require the base
+checkout flag and either a regional rollout flag or the legacy checkout
+flag to be off::
+
+    {
+        "all": [
+            "base_checkout",
+            {
+                "any": [
+                    "regional_checkout",
+                    {"flag": "legacy_checkout", "active": false}
+                ]
+            }
+        ]
+    }
+
+Expressions short-circuit like Python's ``and`` and ``or``. Branches
+that are not visited are not evaluated, so they do not create percentage
+cookies or expose those flags for the current request.
+
+Prerequisite results are cached only on the current request object.
+This makes repeated dependencies in a diamond-shaped graph evaluate once
+without allowing one request or user to reuse another request's value.
+
+Saving a flag rejects malformed expressions, references to unknown
+flags, and cycles. Runtime evaluation also detects cycles; this guards
+against a cycle appearing when two configurations are updated
+concurrently between individual save validations. In that case Waffle
+raises ``waffle.prerequisites.CircularFlagDependencyError`` rather than
+recursing indefinitely.
+
+If a prerequisite flag is missing when a flag is evaluated, the
+prerequisite fails closed and the dependent flag is inactive. This can
+happen if the referenced flag is deleted directly or changed
+concurrently.
 
 
 .. note::

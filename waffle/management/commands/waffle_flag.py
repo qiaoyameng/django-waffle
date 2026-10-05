@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from django.contrib.auth import get_user_model
@@ -97,6 +98,11 @@ class Command(BaseCommand):
             dest='create',
             default=False,
             help='If the flag doesn\'t exist, create it.')
+        parser.add_argument(
+            '--prerequisites',
+            action='store',
+            default=None,
+            help='Boolean JSON expression of prerequisite flags.')
         parser.set_defaults(everyone=None)
 
     help = 'Modify a flag.'
@@ -112,6 +118,15 @@ class Command(BaseCommand):
 
         if not flag_name:
             raise CommandError('You need to specify a flag name.')
+
+        prerequisites = options.pop('prerequisites')
+        if prerequisites is not None:
+            try:
+                options['prerequisites'] = (
+                    {} if prerequisites == '' else json.loads(prerequisites)
+                )
+            except json.JSONDecodeError as exc:
+                raise CommandError('Prerequisites must be valid JSON.') from exc
 
         if options['create']:
             flag, created = get_waffle_flag_model().objects.get_or_create(name=flag_name)
@@ -176,6 +191,8 @@ class Command(BaseCommand):
         self.stdout.write(f'TESTING: {flag.testing}')
         self.stdout.write(f'ROLLOUT: {flag.rollout}')
         self.stdout.write(f'STAFF: {flag.staff}')
+        if flag.prerequisites:
+            self.stdout.write(f'PREREQUISITES: {flag.prerequisites}')
         self.stdout.write('GROUPS: {}'.format(list(
             flag.groups.values_list('name', flat=True)))
         )

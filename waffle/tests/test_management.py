@@ -67,6 +67,34 @@ class WaffleFlagManagementCommandTests(TestCase):
         self.assertTrue(flag.authenticated)
         self.assertTrue(flag.rollout)
 
+    def test_update_prerequisites(self):
+        flag = get_waffle_flag_model().objects.create(name='payment')
+        get_waffle_flag_model().objects.create(name='base_checkout')
+        get_waffle_flag_model().objects.create(name='legacy_checkout')
+
+        call_command(
+            'waffle_flag',
+            'payment',
+            prerequisites='{"all":["base_checkout",{"flag":"legacy_checkout","active":false}]}',
+        )
+
+        flag.refresh_from_db()
+        self.assertEqual(
+            flag.prerequisites,
+            {
+                'all': [
+                    'base_checkout',
+                    {'flag': 'legacy_checkout', 'active': False},
+                ]
+            },
+        )
+
+    def test_invalid_prerequisites_json(self):
+        get_waffle_flag_model().objects.create(name='payment')
+
+        with self.assertRaisesRegex(CommandError, 'Prerequisites must be valid JSON'):
+            call_command('waffle_flag', 'payment', prerequisites='{')
+
     def test_update_activate_everyone(self):
         """ The command should update everyone field to True """
         name = 'test'

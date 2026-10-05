@@ -121,3 +121,29 @@ behavior.
 ``WAFFLE_ENABLE_ADMIN_PAGES``
     Enables the default admin pages for Waffle models. This is True by default,
     but can be disabled to override or customize the pages.
+
+``WAFFLE_EXPOSURE_RECORDER``
+    Dotted path to (or direct) callable invoked once per confirmed flag
+    exposure. It receives a single ``ExposureEvent``. Defaults to ``None``,
+    in which case confirmed exposures are simply discarded. See
+    :ref:`usage-exposures`.
+
+``WAFFLE_EXPOSURE_IDENTITY_FIELDS``
+    Tuple of caller-approved identity field names that may be recorded with an
+    exposure, e.g. ``('user_id', 'session_key')``. Only these names can ever
+    appear on an event; any other keyword passed to ``FlagDecision.confirm()``
+    raises ``ValueError``. Defaults to an empty tuple.
+
+``WAFFLE_EXPOSURE_IDENTITY_RESOLVERS``
+    Mapping of approved field name to dotted path of a callable used to pull
+    that field off the request when an exposure is confirmed without explicit
+    values (e.g. from the ``{% flag %}`` template tag). Defaults resolve
+    ``user_id`` and ``session_key``.
+
+``WAFFLE_EXPOSURE_SUBMIT_ON_ERROR``
+    Whether confirmed exposures are submitted when the view raises a regular
+    exception. Defaults to ``False``.
+
+``WAFFLE_EXPOSURE_SUBMIT_ON_CANCEL``
+    Whether confirmed exposures are submitted when the request is cancelled
+    (e.g. the client disconnected). Defaults to ``False``.

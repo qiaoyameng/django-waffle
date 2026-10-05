@@ -1,11 +1,34 @@
 from django import template
 from django.template.base import VariableDoesNotExist
 
-from waffle import flag_is_active, sample_is_active, switch_is_active
+from waffle import (
+    evaluate_flag,
+    flag_is_active,
+    sample_is_active,
+    switch_is_active,
+)
 from waffle.views import _generate_waffle_js
 
 
 register = template.Library()
+
+
+def flag_was_rendered(request, flag_name):
+    """Evaluate a flag for a template block and confirm its exposure.
+
+    Rendering the ``{% flag %}`` block means the decision was actually
+    used on the page, so the exposure is confirmed. Repeated renders of
+    the same flag within a request (including nested/included templates)
+    are de-duplicated by the decision handle.
+    """
+    if request is None:
+        # Rendered outside of a request context (e.g. an email body built
+        # with render_to_string): fall back to a plain decision, which can
+        # neither render percent flags nor record an exposure.
+        return flag_is_active(None, flag_name)
+    decision = evaluate_flag(request, flag_name)
+    decision.confirm()
+    return bool(decision)
 
 
 class WaffleNode(template.Node):
@@ -60,7 +83,7 @@ class WaffleNode(template.Node):
 
 @register.tag
 def flag(parser, token):
-    return WaffleNode.handle_token(parser, token, 'flag', flag_is_active)
+    return WaffleNode.handle_token(parser, token, 'flag', flag_was_rendered)
 
 
 @register.tag

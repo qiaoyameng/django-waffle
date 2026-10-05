@@ -13,6 +13,7 @@ JavaScript.
    :titlesonly:
 
    views
+   exposures
    decorators
    mixins
    templates

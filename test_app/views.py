@@ -1,9 +1,11 @@
+import asyncio
+
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.template.loader import render_to_string
 from django.views.generic import View
 
-from waffle import flag_is_active
+from waffle import evaluate_flag, flag_is_active
 from waffle.decorators import waffle_flag, waffle_switch
 from waffle.mixins import WaffleFlagMixin, WaffleSampleMixin, WaffleSwitchMixin
 
@@ -18,6 +20,49 @@ def flag_in_view_readonly(request):
     if flag_is_active(request, 'myflag', read_only=True):
         return HttpResponse('on')
     return HttpResponse('off')
+
+
+def evaluate_confirm_view(request):
+    """Evaluate a flag, confirm it only when the feature is actually used."""
+    decision = evaluate_flag(request, 'myflag')
+    if decision:
+        decision.confirm()
+        return HttpResponse('on')
+    return HttpResponse('off')
+
+
+def evaluate_without_confirm_view(request):
+    """Evaluate a flag but never confirm the exposure."""
+    decision = evaluate_flag(request, 'myflag')
+    return HttpResponse('on' if decision else 'off')
+
+
+def evaluate_readonly_view(request):
+    decision = evaluate_flag(request, 'myflag', read_only=True)
+    return HttpResponse('on' if decision else 'off')
+
+
+def flag_nested_in_template(request):
+    return render(request, 'django/nested_outer.html')
+
+
+def boom_view(request):
+    evaluate_flag(request, 'myflag').confirm()
+    raise RuntimeError('view exploded')
+
+
+def cancelled_view(request):
+    evaluate_flag(request, 'myflag').confirm()
+    raise asyncio.CancelledError()
+
+
+async def async_cancelled_view(request):
+    # Build the decision without touching the ORM so the view can run in a
+    # native async context; this view only exists to exercise cancellation.
+    from waffle.exposure import FlagDecision, get_exposure_state
+    state = get_exposure_state(request, create=True)
+    FlagDecision('myflag', True, state).confirm()
+    raise asyncio.CancelledError()
 
 
 def flag_in_jinja(request):

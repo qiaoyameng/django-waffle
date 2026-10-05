@@ -1,0 +1,5 @@
+{% load waffle_tags %}
+outer-before
+{% flag "myflag" %}outer-flag-on{% endflag %}
+{% include "django/nested_inner.html" %}
+outer-after

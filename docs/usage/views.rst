@@ -28,6 +28,12 @@ For example::
         else:
             """Behavior if flag is inactive."""
 
+Note that evaluating a flag does not mean the feature was actually
+shown. To measure real experiment exposures, use
+``waffle.evaluate_flag(request, 'flag_name')`` and explicitly confirm the
+returned decision handle once the feature is used. See
+:ref:`usage-exposures`.
+
 
 Switches
 ========

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 
+from waffle.exposure import FlagDecision, ExposureState, get_exposure_state
 from waffle.utils import get_setting
 from django.apps import apps as django_apps
 
@@ -17,6 +18,45 @@ __version__ = '5.0.0'
 def flag_is_active(request: HttpRequest, flag_name: str, read_only: bool = False) -> bool | None:
     flag = get_waffle_flag_model().get(flag_name)
     return flag.is_active(request, read_only=read_only)
+
+
+def evaluate_flag(
+    request: HttpRequest, flag_name: str, read_only: bool = False
+) -> FlagDecision:
+    """Evaluate a flag and return a confirmable decision handle.
+
+    The returned :class:`~waffle.exposure.FlagDecision` behaves as the
+    final boolean decision, but exposure is only recorded once the caller
+    confirms that the feature was actually used::
+
+        decision = waffle.evaluate_flag(request, 'new_onboarding')
+        if decision:
+            decision.confirm(user_id=request.user.pk)
+
+    Read-only evaluations (and background prewarming) can never be
+    confirmed.
+    """
+    flag = get_waffle_flag_model().get(flag_name)
+    active = flag.is_active(request, read_only=read_only)
+    state =get_exposure_state(request, create=True)
+    return FlagDecision(flag_name, active, state, read_only=read_only)
+
+
+def flush_exposures(
+    request: HttpRequest, *, submit: bool = True
+) -> ExposureState | None:
+    """Submit the request's buffered exposures and seal its handles.
+
+    Normally the middleware calls this at the right time, honouring
+    ``WAFFLE_EXPOSURE_SUBMIT_ON_ERROR`` and
+    ``WAFFLE_EXPOSURE_SUBMIT_ON_CANCEL``. Call it explicitly outside of a
+    request/response cycle (for example after rendering a template to a
+    string in a management command).
+    """
+    state = get_exposure_state(request)
+    if state is not None and not state.closed:
+        state.flush(submit=submit)
+    return state
 
 
 def switch_is_active(switch_name: str) -> bool:

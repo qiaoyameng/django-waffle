@@ -5,10 +5,12 @@ from typing import TYPE_CHECKING
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 
+from waffle import exposures
 from waffle.utils import get_setting
 from django.apps import apps as django_apps
 
 if TYPE_CHECKING:
+    from waffle.exposures import FlagDecision
     from waffle.models import AbstractBaseFlag, AbstractBaseSample, AbstractBaseSwitch
 
 __version__ = '5.0.0'
@@ -17,6 +19,30 @@ __version__ = '5.0.0'
 def flag_is_active(request: HttpRequest, flag_name: str, read_only: bool = False) -> bool | None:
     flag = get_waffle_flag_model().get(flag_name)
     return flag.is_active(request, read_only=read_only)
+
+
+def evaluate_flag(request: HttpRequest, flag_name: str,
+                  read_only: bool = False) -> FlagDecision:
+    """Evaluate a flag and return a confirmable decision handle.
+
+    Evaluation never records an exposure. Call ``confirm()`` on the
+    returned handle (or :func:`waffle.confirm_exposure`) once the feature
+    has actually been used. ``read_only=True`` checks and background
+    warm-up calls should use :func:`flag_is_active` instead.
+    """
+    flag = get_waffle_flag_model().get(flag_name)
+    decision = bool(flag.is_active(request, read_only=read_only))
+    return exposures.evaluate(request, flag_name, decision)
+
+
+def confirm_exposure(request: HttpRequest, flag_name: str, decision: bool,
+                     identity: dict | None = None,
+                     request_id: str | None = None) -> bool:
+    """Confirm that a flag decision was actually shown to the user."""
+    return exposures.confirm_exposure(
+        request, flag_name, decision, identity=identity,
+        request_id=request_id,
+    )
 
 
 def switch_is_active(switch_name: str) -> bool:

@@ -1,6 +1,6 @@
 from jinja2.ext import Extension
 
-from waffle import flag_is_active, sample_is_active, switch_is_active
+from waffle import evaluate_flag, sample_is_active, switch_is_active
 from waffle.views import _generate_waffle_js
 
 
@@ -13,7 +13,12 @@ except ImportError:
 
 @pass_context
 def flag_helper(context, flag_name):
-    return flag_is_active(context['request'], flag_name)
+    request = context['request']
+    decision = evaluate_flag(request, flag_name)
+    # Using the flag in a template is actual usage; nested/repeated uses
+    # within the same request are deduplicated.
+    decision.confirm()
+    return decision
 
 
 @pass_context

@@ -1,7 +1,7 @@
 from django import template
 from django.template.base import VariableDoesNotExist
 
-from waffle import flag_is_active, sample_is_active, switch_is_active
+from waffle import evaluate_flag, flag_is_active, sample_is_active, switch_is_active
 from waffle.views import _generate_waffle_js
 
 
@@ -18,6 +18,7 @@ class WaffleNode(template.Node):
         self.condition = condition
         self.name = name
         self.compiled_name = compiled_name
+        self.kind = ''
 
     def __repr__(self):
         return f'<Waffle node: {self.name}>'
@@ -33,7 +34,17 @@ class WaffleNode(template.Node):
             name = self.name
         if not name:
             name = self.name
-        if self.condition(context.get('request', None), name):
+        request = context.get('request', None)
+        if self.kind == 'flag' and request is not None:
+            # Rendering a {% flag %} block is actual usage: confirm the
+            # exposure so experiment stats count impressions, not mere
+            # evaluations. Nested/repeated blocks are deduplicated.
+            decision = evaluate_flag(request, name)
+            active = bool(decision)
+            decision.confirm()
+        else:
+            active = self.condition(request, name)
+        if active:
             return self.nodelist_true.render(context)
         return self.nodelist_false.render(context)
 
@@ -54,8 +65,10 @@ class WaffleNode(template.Node):
         else:
             nodelist_false = template.NodeList()
 
-        return cls(nodelist_true, nodelist_false, condition,
+        node = cls(nodelist_true, nodelist_false, condition,
                    name, compiled_name)
+        node.kind = kind
+        return node
 
 
 @register.tag

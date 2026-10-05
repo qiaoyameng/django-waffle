@@ -121,3 +121,24 @@ behavior.
 ``WAFFLE_ENABLE_ADMIN_PAGES``
     Enables the default admin pages for Waffle models. This is True by default,
     but can be disabled to override or customize the pages.
+
+``WAFFLE_EXPOSURE_LOGGER``
+    A callable (or dotted import path) that receives one
+    ``waffle.exposures.ExposureRecord`` whenever a flag exposure confirmed
+    through ``waffle.evaluate_flag`` / ``{% flag %}`` is submitted. Defaults
+    to ``None``, which disables exposure registration. See
+    :ref:`usage-exposures`.
+
+``WAFFLE_EXPOSURE_IDENTITY_ATTRIBUTES``
+    A tuple of ``request.user`` attribute names copied into an exposure
+    record when ``confirm()`` is called without an explicit ``identity``
+    mapping. Nothing is copied unless the project opts in. Defaults to an
+    empty tuple.
+
+``WAFFLE_LOG_EXPOSURES_ON_ERROR_RESPONSE``
+    Whether confirmed exposures are submitted when the response status
+    code is 400 or higher. Defaults to ``False``.
+
+``WAFFLE_LOG_EXPOSURES_ON_EXCEPTION``
+    Whether confirmed exposures are submitted when the view raises an
+    exception (or the request is cancelled). Defaults to ``False``.

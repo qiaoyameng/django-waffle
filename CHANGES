@@ -2,6 +2,21 @@
 Waffle Changelog
 ================
 
+v5.1.0
+======
+- Added explicit flag exposure tracking: ``waffle.evaluate_flag`` returns
+  a request-bound decision handle whose ``confirm()`` registers an
+  exposure only when the feature is actually used
+- ``{% flag %}`` and Jinja2 ``waffle.flag`` usages confirm exposures
+  automatically; nested or repeated usages are deduplicated per request
+- Plain ``flag_is_active`` calls, read-only checks and background warm-up
+  do not record exposures
+- Added ``WAFFLE_EXPOSURE_LOGGER``, ``WAFFLE_EXPOSURE_IDENTITY_ATTRIBUTES``,
+  ``WAFFLE_LOG_EXPOSURES_ON_ERROR_RESPONSE`` and
+  ``WAFFLE_LOG_EXPOSURES_ON_EXCEPTION`` settings
+- Exposure records contain only caller-approved identity fields; the
+  request and user objects are never passed to the logger
+
 v5.0.0
 ======
 - Updated documentation

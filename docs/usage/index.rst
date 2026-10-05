@@ -16,6 +16,7 @@ JavaScript.
    decorators
    mixins
    templates
+   exposures
    javascript
    json
    cli

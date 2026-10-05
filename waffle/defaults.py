@@ -30,3 +30,21 @@ LOG_MISSING_SWITCHES = None
 
 OVERRIDE = False
 ENABLE_ADMIN_PAGES = True
+
+# Explicit exposure ("impression") tracking. None disables exposure
+# registration entirely. A callable or a dotted import path receives one
+# record per confirmed flag decision.
+EXPOSURE_LOGGER = None
+
+# Callable attributes copied off ``request.user`` when an exposure is
+# confirmed without an explicit ``identity`` mapping. Nothing is copied
+# unless a project explicitly opts in by listing attribute names here.
+EXPOSURE_IDENTITY_ATTRIBUTES = ()
+
+# Whether exposures confirmed during a request whose response signals a
+# failure (HTTP status >= 400) are still handed to the logger.
+LOG_EXPOSURES_ON_ERROR_RESPONSE = False
+
+# Whether confirmed exposures are handed to the logger when the view
+# raised (or was cancelled before a successful response).
+LOG_EXPOSURES_ON_EXCEPTION = False

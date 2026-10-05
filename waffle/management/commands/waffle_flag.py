@@ -85,6 +85,19 @@ class Command(BaseCommand):
             default=False,
             help='Turn on rollout mode.')
         parser.add_argument(
+            '--stable-rollout',
+            action='store_true',
+            dest='stable_rollout',
+            default=False,
+            help='Use stable, identity-based bucketing for the percentage.')
+        parser.add_argument(
+            '--rotate-salt',
+            action='store_true',
+            dest='rotate_salt',
+            default=False,
+            help='Explicitly rotate the stable rollout salt, reassigning '
+                 'identities to buckets.')
+        parser.add_argument(
             '--testing', '-t',
             action='store_true',
             dest='testing',
@@ -127,6 +140,7 @@ class Command(BaseCommand):
         # field, so we handle it a bit differently by looking up groups and
         # adding each group to the flag individually
         options_append = options.pop('append')
+        rotate_salt = options.pop('rotate_salt')
         if groups := options.pop('group'):
             group_hash = {}
             for group in groups:
@@ -160,6 +174,8 @@ class Command(BaseCommand):
             self.stdout.write(f'Setting user(s): {user_hash}')
             # for user in user_hash:
             flag.users.add(*[user.id for user in user_hash])
+        if rotate_salt:
+            flag.rotate_salt()
         for option_name, option in options.items():
             if hasattr(flag, option_name):
                 self.stdout.write(f'Setting {option_name}: {option}')
@@ -175,6 +191,8 @@ class Command(BaseCommand):
         self.stdout.write(f'PERCENT: {flag.percent}')
         self.stdout.write(f'TESTING: {flag.testing}')
         self.stdout.write(f'ROLLOUT: {flag.rollout}')
+        self.stdout.write(f'STABLE_ROLLOUT: {flag.stable_rollout}')
+        self.stdout.write(f'SALT: {flag.salt}')
         self.stdout.write(f'STAFF: {flag.staff}')
         self.stdout.write('GROUPS: {}'.format(list(
             flag.groups.values_list('name', flat=True)))

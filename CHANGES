@@ -4,6 +4,7 @@ Waffle Changelog
 
 v5.0.0
 ======
+- Added stable rollout mode for flags: deterministic, identity-based percentage bucketing with a per-flag salt (``WAFFLE_STABLE_IDENTITY``, ``WAFFLE_STABLE_ROLLOUT_MISSING_IDENTITY``); salts are only rotated explicitly
 - Updated documentation
 - Dropped support for Django 3.2, 4.0, and 4.1
 - Updated test suite for Django 5.x

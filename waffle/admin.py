@@ -59,6 +59,18 @@ def disable_for_all(ma, request, qs):
 
 
 @admin.action(
+    description=_('Rotate stable rollout salt'),
+    permissions=('change',),
+)
+def rotate_stable_salt(ma, request, qs):
+    # Explicitly rotate salts; an ordinary save never re-groups users.
+    # Iterate over all objects to cause cache invalidation.
+    for f in qs.all():
+        _add_log_entry(request.user, f, "salt rotated", CHANGE)
+        f.rotate_salt()
+
+
+@admin.action(
     description=_('Delete selected'),
     permissions=('delete',),
 )
@@ -90,11 +102,13 @@ class InformativeManyToManyRawIdWidget(ManyToManyRawIdWidget):
 
 
 class FlagAdmin(BaseAdmin):
-    actions = [enable_for_all, disable_for_all, delete_individually]
+    actions = [enable_for_all, disable_for_all, rotate_stable_salt,
+               delete_individually]
     list_display = ('name', 'note', 'everyone', 'percent', 'superusers',
-                    'staff', 'authenticated', 'languages')
+                    'staff', 'authenticated', 'stable_rollout', 'languages')
     list_filter = ('everyone', 'superusers', 'staff', 'authenticated')
     raw_id_fields = ('users', )
+    readonly_fields = ('salt',)
     ordering = ('-id',)
 
     def formfield_for_dbfield(self, db_field, **kwargs):

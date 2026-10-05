@@ -34,7 +34,9 @@ in the database, Waffle will make roughly the following decisions:
 - If not, does the user have an existing cookie set for this flag? If
   so, use that value.
 - If not, randomly assign a value for this user based on the
-  *Percentage* and set a cookie.
+  *Percentage* and set a cookie (or, with :ref:`Stable Rollout
+  <types-flag-stable-rollout>` enabled, deterministically bucket a
+  configured identity against the *Percentage*).
 
 
 Flag Attributes
@@ -69,6 +71,9 @@ Flags can be administered through the Django `admin site`_ or the
     A list of user IDs for which this flag will always be active.
 :rollout:
     Activate Rollout mode? :ref:`See below <types-flag-rollout>`.
+:stable_rollout:
+    Activate Stable Rollout mode for the percentage? :ref:`See below
+    <types-flag-stable-rollout>`.
 :note:
     Describe where the flag is used.
 
@@ -223,6 +228,68 @@ cookies, while those setting the Flag to "on" are still controlled by
 Effectively, Rollout mode changes the *Percentage* from "percentage of
 visitors" to "percent chance that the Flag will be activated per visit."
 
+
+.. _types-flag-stable-rollout:
+
+Stable Rollout Mode
+===================
+
+The default *Percentage* step draws a new random number whenever a visitor
+has no cookie, so the decision can be re-sampled across requests or clients.
+*Stable Rollout mode* replaces that random draw with a deterministic bucket
+computed from a configured identity, a flag-specific salt, and the flag name.
+
+The bucket is a number in the range ``0`` to ``9999``. It is active when it
+is smaller than ``percent / 100 * 10000``. Because the bucket never changes
+unless the salt is rotated:
+
+- the same identity gets the same answer on every request and client,
+- increasing the *Percentage* only adds identities: an identity that was
+  active at 10% remains active at 20% (or any larger percentage).
+
+All earlier rules keep their priority: *Everyone*, *Testing*, language,
+superuser/staff/authenticated, explicit users and groups are all evaluated
+before the stable percentage. Stable bucketing only replaces the random
+percentage step; it never sets a cookie.
+
+Identity
+--------
+
+The identity is provided by :ref:`WAFFLE_STABLE_IDENTITY
+<starting-configuring>`. It defaults to the primary key of the authenticated
+user; anonymous requests have no identity. What happens without an identity
+is controlled by :ref:`WAFFLE_STABLE_ROLLOUT_MISSING_IDENTITY
+<starting-configuring>`:
+
+- ``miss`` (default): the flag is inactive for the request.
+- ``cookie``: fall back to the existing random cookie path for the request.
+
+Only one bucket key is ever used per decision. In particular, a user that
+logs in or out switches identity: an anonymous visitor is handled by the
+configured missing-identity rule, while a logged-in user is always bucketed
+by their configured identity. An existing anonymous cookie is never used to
+seed or override the authenticated bucket, so the two keys cannot be mixed
+implicitly. To keep anonymous visitors stable as well, provide a custom
+identity that returns a stable anonymous identifier (for example a value
+stored in a separate session identifier).
+
+Salt and rotation
+-----------------
+
+A per-flag salt is generated automatically the first time a flag is saved
+with Stable Rollout enabled, and it is retained on every later save.
+Editing a flag (changing its percentage, note, etc.) therefore never
+re-groups identities.
+
+To deliberately reassign identities to buckets, rotate the salt explicitly:
+
+- the ``rotate_salt()`` method on the flag model,
+- the *Rotate stable rollout salt* admin action,
+- the ``--rotate-salt`` option of the :ref:`waffle_flag <usage-cli>`
+  management command.
+
+Rotating the salt produces an unrelated grouping and should be treated as a
+fresh rollout.
 
 .. _request: https://docs.djangoproject.com/en/dev/topics/http/urls/#how-django-processes-a-request
 .. _admin site: https://docs.djangoproject.com/en/dev/ref/contrib/admin/

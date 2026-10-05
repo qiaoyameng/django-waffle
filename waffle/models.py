@@ -19,6 +19,7 @@ from waffle import (
     managers,
 )
 from waffle.utils import get_setting, keyfmt, get_cache
+from waffle.stable import generate_salt, get_stable_identity, stable_is_active
 
 logger = logging.getLogger('waffle')
 
@@ -189,6 +190,24 @@ class AbstractBaseFlag(BaseModel):
         help_text=_('Activate roll-out mode?'),
         verbose_name=_('Rollout'),
     )
+    stable_rollout = models.BooleanField(
+        default=False,
+        help_text=_(
+            'Use stable, identity-based bucketing for the percentage instead '
+            'of per-request random sampling? Bucketing is deterministic '
+            'across requests and clients.'),
+        verbose_name=_('Stable rollout'),
+    )
+    salt = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text=_(
+            'Salt used for stable rollout bucketing. It is set automatically '
+            'when stable rollout is enabled. Rotate it explicitly to reassign '
+            'identities to buckets.'),
+        verbose_name=_('Salt'),
+    )
     note = models.TextField(
         blank=True,
         help_text=_('Note where this Flag is used.'),
@@ -261,6 +280,14 @@ class AbstractBaseFlag(BaseModel):
 
     def _is_active_for_percent(self, request: HttpRequest, read_only: bool) -> bool | None:
         if self.percent and self.percent > 0:
+            if self.stable_rollout:
+                identity = get_stable_identity(request)
+                if identity is not None:
+                    return stable_is_active(self.name, self.salt, identity,
+                                             self.percent)
+                if get_setting('STABLE_ROLLOUT_MISSING_IDENTITY') != 'cookie':
+                    return False
+
             if not hasattr(request, 'waffles'):
                 request.waffles = {}
             elif self.name in request.waffles:
@@ -280,6 +307,21 @@ class AbstractBaseFlag(BaseModel):
                 set_flag(request, self.name, False, self.rollout)
 
         return None
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self.stable_rollout and not self.salt:
+            self.salt = generate_salt()
+        return super().save(*args, **kwargs)
+
+    def rotate_salt(self, new_salt: str | None = None) -> None:
+        """Explicitly rotate the stable-rollout salt and persist the flag.
+
+        This is the only operation that reassigns identities to buckets; an
+        ordinary save keeps the existing salt so that editing a flag (for
+        example changing its percentage) does not regroup users.
+        """
+        self.salt = new_salt or generate_salt()
+        self.save()
 
     def is_active(self, request: HttpRequest, read_only: bool = False) -> bool | None:
         if not self.pk:

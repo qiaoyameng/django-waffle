@@ -123,7 +123,8 @@ class WaffleFlagManagementCommandTests(TestCase):
         call_command('waffle_flag', list_flags=True, stdout=stdout)
         expected = 'Flags:\nNAME: test\nSUPERUSERS: True\nEVERYONE: None\n' \
                    'AUTHENTICATED: False\nPERCENT: None\nTESTING: False\n' \
-                   'ROLLOUT: False\nSTAFF: False\nGROUPS: []\nUSERS: []'
+                   'ROLLOUT: False\nSTABLE_ROLLOUT: False\nSALT: \n' \
+                   'STAFF: False\nGROUPS: []\nUSERS: []'
         actual = stdout.getvalue().strip()
         self.assertEqual(actual, expected)
 
@@ -145,6 +146,35 @@ class WaffleFlagManagementCommandTests(TestCase):
         self.assertEqual(list(flag.groups.values_list('name', flat=True)),
                          ['waffle_group', 'append_group'])
         self.assertIsNone(flag.everyone)
+
+    def test_stable_rollout_provisions_salt(self):
+        """ Enabling stable rollout provisions a salt. """
+        name = 'test'
+        call_command('waffle_flag', name, percent=20, stable_rollout=True,
+                     create=True)
+
+        flag = get_waffle_flag_model().objects.get(name=name)
+        self.assertTrue(flag.stable_rollout)
+        self.assertTrue(flag.salt)
+
+        salt = flag.salt
+        # An ordinary save (e.g. a percentage change) keeps grouping stable.
+        call_command('waffle_flag', name, percent=30)
+        flag.refresh_from_db()
+        self.assertEqual(flag.salt, salt)
+
+    def test_rotate_salt_is_explicit(self):
+        """ --rotate-salt explicitly reassigns the salt. """
+        name = 'test'
+        call_command('waffle_flag', name, percent=20, stable_rollout=True,
+                     create=True)
+        flag = get_waffle_flag_model().objects.get(name=name)
+        original_salt = flag.salt
+
+        call_command('waffle_flag', name, rotate_salt=True)
+        flag.refresh_from_db()
+        self.assertTrue(flag.salt)
+        self.assertNotEqual(flag.salt, original_salt)
 
     def test_user(self):
         """ The command should replace a user to a flag."""

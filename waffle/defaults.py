@@ -30,3 +30,6 @@ LOG_MISSING_SWITCHES = None
 
 OVERRIDE = False
 ENABLE_ADMIN_PAGES = True
+
+STABLE_ROLLOUT_MISSING_IDENTITY = 'miss'
+STABLE_IDENTITY = 'waffle.stable._default_identity'

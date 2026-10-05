@@ -20,7 +20,9 @@ Use ``--everyone`` to turn on and ``--deactivate`` to turn off the flag.
 Set a percentage with ``--percent`` or ``-p``. Set the flag on for
 superusers (``--superusers``), staff (``--staff``) or authenticated
 (``--authenticated``) users. Set the rollout mode on with ``--rollout``
-or ``-r``.
+or ``-r``. Enable stable, identity-based percentage bucketing with
+``--stable-rollout``; rotate its salt explicitly with ``--rotate-salt``
+(ordinary saves, such as changing the percentage, never rotate the salt).
 
 If the flag doesn't exist, add ``--create`` to create it before setting
 its values::

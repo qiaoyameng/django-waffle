@@ -9,7 +9,8 @@ from django.contrib.auth.models import Permission
 from django.test.utils import override_settings
 from waffle import get_waffle_flag_model
 from waffle.admin import (FlagAdmin, SwitchAdmin, InformativeManyToManyRawIdWidget, enable_for_all,
-                          disable_for_all, delete_individually, enable_switches, disable_switches)
+                          disable_for_all, delete_individually, rotate_stable_salt,
+                          enable_switches, disable_switches)
 from waffle.models import Switch
 from waffle.tests.base import TestCase
 from waffle.utils import get_setting
@@ -88,6 +89,20 @@ class FlagAdminTests(TestCase):
         log_entry = LogEntry.objects.get(user=request.user)
         self.assertEqual(log_entry.action_flag, DELETION)
 
+    def test_rotate_stable_salt(self):
+        flag = Flag.objects.create(name="flag1", stable_rollout=True,
+                                   percent=50)
+        original_salt = flag.salt
+
+        request = FakeRequest()
+        rotate_stable_salt(None, request, Flag.objects.all())
+
+        flag.refresh_from_db()
+        self.assertTrue(flag.salt)
+        self.assertNotEqual(flag.salt, original_salt)
+        log_entry = LogEntry.objects.get(user=request.user)
+        self.assertEqual(log_entry.action_flag, CHANGE)
+
     @skip_if_admin_permissions_not_available
     def test_flag_no_actions_without_permissions(self):
         request = FakeRequest()
@@ -101,7 +116,9 @@ class FlagAdminTests(TestCase):
         request.user.user_permissions.add(Permission.objects.get(codename="change_flag"))
         actions = self.flag_admin.get_actions(request)
 
-        self.assertEqual(actions.keys(), {"enable_for_all", "disable_for_all"})
+        self.assertEqual(
+            actions.keys(),
+            {"enable_for_all", "disable_for_all", "rotate_stable_salt"})
 
     @skip_if_admin_permissions_not_available
     def test_flag_action_delete(self):

@@ -121,3 +121,18 @@ behavior.
 ``WAFFLE_ENABLE_ADMIN_PAGES``
     Enables the default admin pages for Waffle models. This is True by default,
     but can be disabled to override or customize the pages.
+
+``WAFFLE_STABLE_IDENTITY``
+    Dotted path (or callable) used to derive the stable rollout identity from
+    the current request. It receives the ``request`` and must return a string
+    for known identities, or ``None`` when no stable identity is available.
+    Defaults to ``'waffle.stable._default_identity'``, which returns the
+    primary key (``user:<pk>``) of the authenticated user and ``None`` for
+    anonymous requests. See :ref:`Stable Rollout <types-flag-stable-rollout>`.
+
+``WAFFLE_STABLE_ROLLOUT_MISSING_IDENTITY``
+    What a :ref:`Stable Rollout <types-flag-stable-rollout>` flag does when
+    the identity source returns ``None``. Set to ``'miss'`` (default) for the
+    flag to be inactive, or ``'cookie'`` to fall back to the existing random
+    cookie path for that request. Authenticated decisions always use the
+    configured identity and never an anonymous cookie.

@@ -18,6 +18,13 @@ FLAG_DEFAULT = False
 SAMPLE_DEFAULT = False
 SWITCH_DEFAULT = False
 
+# Stable rollout: hash a configured identity into a flag-specific bucket
+# instead of re-randomising the percentage decision on every request.
+STABLE_ROLLOUT = False
+ROLLOUT_IDENTIFIER = 'pk'
+ROLLOUT_MISSING_IDENTIFIER = 'miss'
+ROLLOUT_BUCKET_COUNT = 10000
+
 READ_FROM_WRITE_DB = False
 
 CREATE_MISSING_FLAGS = False

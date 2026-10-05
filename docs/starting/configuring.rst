@@ -121,3 +121,38 @@ behavior.
 ``WAFFLE_ENABLE_ADMIN_PAGES``
     Enables the default admin pages for Waffle models. This is True by default,
     but can be disabled to override or customize the pages.
+
+``WAFFLE_STABLE_ROLLOUT``
+    When ``True``, the *Percent* step for a Flag is replaced by stable
+    bucketing: the configured identity for the current user is hashed
+    together with the flag name and the flag's per-flag salt into a
+    fixed bucket, which is then compared against the flag's *Percent*.
+    The decision is therefore identical on every request and every
+    client, and increasing the percent only adds identities, it never
+    removes ones already selected. All earlier checks
+    (*Everyone*, *Testing*, languages, superusers, staff, authenticated,
+    groups and explicit users) keep their precedence and are evaluated
+    first; stable bucketing only replaces the random percentage step.
+    Defaults to ``False``, which preserves the historical
+    cookie/``random`` behavior.
+
+``WAFFLE_ROLLOUT_IDENTIFIER``
+    Selects the identity used by stable rollout. Either the name of an
+    attribute on the authenticated user (e.g. ``'pk'``, the default, or
+    ``'email'``) or a callable taking ``(user, request)`` and returning
+    a hashable identity string. Anonymous users, and users for whom the
+    identity is missing or empty, have no identity.
+
+``WAFFLE_ROLLOUT_MISSING_IDENTIFIER``
+    What happens when stable rollout is enabled but the request has no
+    identity. ``'miss'`` (the default) means the flag is inactive and no
+    percent cookie is written. ``'cookie'`` falls back to the existing
+    per-browser cookie/random path for anonymous visitors; once a user
+    logs in their identity bucket is used instead and the anonymous
+    cookie is neither read nor written, so the two bucket keys are never
+    mixed.
+
+``WAFFLE_ROLLOUT_BUCKET_COUNT``
+    Number of buckets identities are mapped to before comparison with
+    the flag's *Percent*. Defaults to ``10000``, giving a granularity of
+    0.01%.

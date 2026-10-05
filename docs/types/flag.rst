@@ -36,6 +36,14 @@ in the database, Waffle will make roughly the following decisions:
 - If not, randomly assign a value for this user based on the
   *Percentage* and set a cookie.
 
+When :ref:`WAFFLE_STABLE_ROLLOUT <starting-configuring>` is enabled, the
+last two percentage steps are replaced by a single stable step: the
+configured identity of the current user is hashed with the flag name
+and the flag's :ref:`salt <types-flag-stable-rollout>` into a fixed
+bucket, and the flag is active when that bucket falls within the
+*Percentage*. Every check above keeps its precedence; only the random
+percentage decision changes.
+
 
 Flag Attributes
 ===============
@@ -69,6 +77,11 @@ Flags can be administered through the Django `admin site`_ or the
     A list of user IDs for which this flag will always be active.
 :rollout:
     Activate Rollout mode? :ref:`See below <types-flag-rollout>`.
+:salt:
+    Per-flag salt for :ref:`stable rollout <types-flag-stable-rollout>`.
+    Generated when the flag is created and immutable on ordinary saves;
+    it only changes when you rotate it explicitly, which reassigns all
+    identities to new buckets.
 :note:
     Describe where the flag is used.
 
@@ -222,6 +235,81 @@ cookies, while those setting the Flag to "on" are still controlled by
 
 Effectively, Rollout mode changes the *Percentage* from "percentage of
 visitors" to "percent chance that the Flag will be activated per visit."
+
+
+.. _types-flag-stable-rollout:
+
+Stable Rollout
+==============
+
+The default percentage behavior samples independently on every request
+(and on every client) until a cookie is set. That means the decision can
+be re-sampled when a cookie is missing, expires, or never reaches the
+server, and different devices are bucketed separately.
+
+Set :ref:`WAFFLE_STABLE_ROLLOUT <starting-configuring>` to ``True`` to
+replace the percentage step with deterministic bucketing:
+
+#. The identity is taken from the authenticated user using
+   :ref:`WAFFLE_ROLLOUT_IDENTIFIER <starting-configuring>` (the user's
+   primary key by default).
+#. It is hashed together with the flag name and the flag's salt
+   (HMAC-SHA256) into one of
+   :ref:`WAFFLE_ROLLOUT_BUCKET_COUNT <starting-configuring>` buckets.
+#. The flag is active when the bucket is below the flag's *Percent*.
+
+All earlier rules — *Everyone*, *Testing*, languages, superusers, staff,
+*Authenticated*, groups and explicit users — keep their precedence.
+Stable bucketing is only consulted when none of them matched.
+
+Because the bucket is a pure function of the identity, flag name and
+salt:
+
+- The same user gets the same answer on every request and every client.
+- Raising the *Percent* (e.g. 10% → 20%) is monotonic: every identity
+  selected at 10% is still selected at 20%, and new identities are only
+  added. This is verified against the fixed set of possible identities
+(the buckets), not by sampling traffic.
+
+Missing identity
+----------------
+
+Anonymous users have no identity. Configure the behavior with
+:ref:`WAFFLE_ROLLOUT_MISSING_IDENTIFIER <starting-configuring>`:
+
+- ``'miss'`` (default): the flag is inactive and no percent cookie is
+  written.
+- ``'cookie'``: anonymous visitors use the existing per-browser
+  cookie/random percentage path.
+
+Login and logout
+----------------
+
+The two bucket keys are never mixed within one request:
+
+- An authenticated request is always bucketed by the configured
+  identity. Waffle does not read the anonymous percent cookie and does
+  not write one, even if such a cookie is present.
+- An anonymous request (with ``'cookie'``) uses only the cookie path.
+
+Consequently, logging in moves a visitor from their anonymous cookie
+bucket to their identity bucket, and logging out moves them back to the
+cookie bucket; neither value is carried over or overwritten.
+
+Salt rotation
+-------------
+
+Buckets are keyed by the flag's salt, so the salt is the only thing that
+can reassign identities. It is generated when the flag is created and
+saving a flag for any ordinary reason (editing the percent, note, etc.)
+never changes it, which means increasing a percentage does not reshuffle
+existing users.
+
+To deliberately re-bucket every identity — for example after a ramp-up
+experiment — rotate the salt explicitly with
+``Flag.rotate_salt()`` or with the *Rotate rollout salt* admin action.
+Rotating the salt invalidates the stable property during a ramp-up: do
+it on purpose, not as part of a routine edit.
 
 
 .. _request: https://docs.djangoproject.com/en/dev/topics/http/urls/#how-django-processes-a-request

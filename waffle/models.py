@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import uuid
 from decimal import Decimal
 from typing import Any, TypeVar
 
@@ -18,7 +19,13 @@ from waffle import (
     get_waffle_flag_model,
     managers,
 )
-from waffle.utils import get_setting, keyfmt, get_cache
+from waffle.utils import (
+    get_setting,
+    identity_in_percent,
+    keyfmt,
+    get_cache,
+    rollout_bucket,
+)
 
 logger = logging.getLogger('waffle')
 
@@ -129,6 +136,10 @@ def set_flag(request: HttpRequest, flag_name: str, active: bool | None = True, s
     request.waffles[flag_name] = [active, session_only]
 
 
+def _generate_salt() -> str:
+    return uuid.uuid4().hex
+
+
 class AbstractBaseFlag(BaseModel):
     """A feature flag.
 
@@ -188,6 +199,15 @@ class AbstractBaseFlag(BaseModel):
         default=False,
         help_text=_('Activate roll-out mode?'),
         verbose_name=_('Rollout'),
+    )
+    salt = models.CharField(
+        max_length=64,
+        default=_generate_salt,
+        editable=False,
+        help_text=_('Per-flag salt used by stable percentage rollout. Only '
+                    'changes when the salt is rotated explicitly, which '
+                    'reassigns all identities to new buckets.'),
+        verbose_name=_('Salt'),
     )
     note = models.TextField(
         blank=True,
@@ -259,27 +279,93 @@ class AbstractBaseFlag(BaseModel):
                 return True
         return None
 
+    def _rollout_identity(self, request: HttpRequest) -> str | None:
+        """Return the configured stable identity for the request's user.
+
+        Anonymous users, and authenticated users whose configured identity
+        is empty, have no stable identity.
+        """
+        user = getattr(request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return None
+
+        source = get_setting('ROLLOUT_IDENTIFIER')
+        if callable(source):
+            value = source(user, request)
+        else:
+            value = getattr(user, source, None)
+            if callable(value):
+                value = value()
+
+        if value is None or value == "":
+            return None
+        return str(value)
+
+    def _is_active_for_stable_rollout(self, request: HttpRequest) -> bool | None:
+        """Percentage decision from a stable identity-specific bucket.
+
+        Returns ``None`` when stable rollout does not own this decision, so
+        that callers fall back to the existing cookie/random path.
+        """
+        if not get_setting('STABLE_ROLLOUT'):
+            return None
+        if not self.percent or Decimal(str(self.percent)) <= 0:
+            return None
+
+        identity = self._rollout_identity(request)
+        if identity is None:
+            if get_setting('ROLLOUT_MISSING_IDENTIFIER') == 'cookie':
+                # Fall back to the per-browser cookie/random path for
+                # anonymous visitors.
+                return None
+            # Stable rollout with no identity always misses; no cookie is
+            # written and no bucket is guessed.
+            return False
+
+        bucket = rollout_bucket(identity, self.name, self.salt)
+        return identity_in_percent(bucket, self.percent)
+
     def _is_active_for_percent(self, request: HttpRequest, read_only: bool) -> bool | None:
-        if self.percent and self.percent > 0:
-            if not hasattr(request, 'waffles'):
-                request.waffles = {}
-            elif self.name in request.waffles:
-                return request.waffles[self.name][0]
+        if not self.percent or Decimal(str(self.percent)) <= 0:
+            return None
 
-            cookie = get_setting('COOKIE') % self.name
-            if cookie in request.COOKIES:
-                flag_active = request.COOKIES[cookie] == 'True'
-                if not read_only:
-                    set_flag(request, self.name, flag_active, self.rollout)
-                return flag_active
+        stable = self._is_active_for_stable_rollout(request)
+        if stable is not None:
+            # Identified requests never consult or write the percent
+            # cookie, so anonymous buckets and identity buckets never mix.
+            return stable
 
+        if not hasattr(request, 'waffles'):
+            request.waffles = {}
+        elif self.name in request.waffles:
+            return request.waffles[self.name][0]
+
+        cookie = get_setting('COOKIE') % self.name
+        if cookie in request.COOKIES:
+            flag_active = request.COOKIES[cookie] == 'True'
             if not read_only:
-                if Decimal(str(random.uniform(0, 100))) <= self.percent:
-                    set_flag(request, self.name, True, self.rollout)
-                    return True
-                set_flag(request, self.name, False, self.rollout)
+                set_flag(request, self.name, flag_active, self.rollout)
+            return flag_active
+
+        if not read_only:
+            if Decimal(str(random.uniform(0, 100))) <= self.percent:
+                set_flag(request, self.name, True, self.rollout)
+                return True
+            set_flag(request, self.name, False, self.rollout)
 
         return None
+
+    def rotate_salt(self, save: bool = True) -> str:
+        """Explicitly rotate this flag's rollout salt.
+
+        Stable buckets are keyed by the salt, so rotation is the only way
+        identities are reassigned. Saving a flag for any other reason does
+        not change the salt.
+        """
+        self.salt = _generate_salt()
+        if save:
+            self.save()
+        return self.salt
 
     def is_active(self, request: HttpRequest, read_only: bool = False) -> bool | None:
         if not self.pk:

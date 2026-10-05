@@ -59,6 +59,17 @@ def disable_for_all(ma, request, qs):
 
 
 @admin.action(
+    description=_('Rotate rollout salt (reassign all buckets)'),
+    permissions=('change',),
+)
+def rotate_salt(ma, request, qs):
+    # Iterate over all objects to cause cache invalidation.
+    for f in qs.all():
+        _add_log_entry(request.user, f, "salt rotated", CHANGE)
+        f.rotate_salt()
+
+
+@admin.action(
     description=_('Delete selected'),
     permissions=('delete',),
 )
@@ -90,7 +101,8 @@ class InformativeManyToManyRawIdWidget(ManyToManyRawIdWidget):
 
 
 class FlagAdmin(BaseAdmin):
-    actions = [enable_for_all, disable_for_all, delete_individually]
+    actions = [enable_for_all, disable_for_all, rotate_salt,
+               delete_individually]
     list_display = ('name', 'note', 'everyone', 'percent', 'superusers',
                     'staff', 'authenticated', 'languages')
     list_filter = ('everyone', 'superusers', 'staff', 'authenticated')

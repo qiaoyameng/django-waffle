@@ -315,6 +315,226 @@ class WaffleTests(TestCase):
         assert waffle.flag_is_active(request, 'myflag')
         assert request.waffles['myflag'][0]
 
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_is_deterministic_across_requests(self):
+        """The same identity always lands in the same bucket."""
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='50.0')
+        user = get_user_model().objects.create(username='foo')
+
+        request = RequestFactory().get('/foo')
+        request.user = user
+        first = waffle.flag_is_active(request, 'myflag')
+
+        for _ in range(5):
+            request = RequestFactory().get('/foo')
+            request.user = get_user_model().objects.get(pk=user.pk)
+            assert waffle.flag_is_active(request, 'myflag') is first
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_increasing_percent_is_monotonic(self):
+        """From 10% to 20%, previously selected identities stay selected.
+
+        Uses a fixed identity set and set inclusion, not random proportions.
+        """
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='10.0')
+        users = [get_user_model().objects.create(username=f'u{i}')
+                 for i in range(300)]
+
+        def selected():
+            chosen = set()
+            for user in users:
+                request = RequestFactory().get('/foo')
+                request.user = user
+                if waffle.flag_is_active(request, 'myflag'):
+                    chosen.add(user.pk)
+            return chosen
+
+        selected_at_10 = selected()
+        assert selected_at_10  # 10% of 300 should not be empty
+
+        flag.percent = '20.0'
+        flag.save()
+        selected_at_20 = selected()
+
+        assert selected_at_10.issubset(selected_at_20)
+        assert selected_at_20 >= selected_at_10
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_does_not_set_percent_cookie(self):
+        waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='50.0')
+        user = get_user_model().objects.create(username='foo')
+
+        request = RequestFactory().get('/foo')
+        request.user = user
+        response = process_request(request, views.flag_in_view)
+        assert 'dwf_myflag' not in response.cookies
+        assert not hasattr(request, 'waffles') or 'myflag' not in request.waffles
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_ignores_existing_cookie_for_identity(self):
+        """An identified user never inherits an anonymous cookie bucket."""
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='99.9')
+        user = get_user_model().objects.create(username='foo')
+
+        request = RequestFactory().get('/foo')
+        request.user = user
+        request.COOKIES['dwf_myflag'] = 'False'
+        response = process_request(request, views.flag_in_view)
+        assert 'dwf_myflag' not in response.cookies
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_salt_stable_on_save(self):
+        """Ordinary saves never reshuffle buckets."""
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='50.0', note='one')
+        original_salt = flag.salt
+
+        flag.note = 'two'
+        flag.percent = '60.0'
+        flag.save()
+        flag.refresh_from_db()
+        assert flag.salt == original_salt
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_rotate_salt_is_explicit(self):
+        """Only explicit rotation changes the salt and reassigns buckets."""
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='50.0')
+        original_salt = flag.salt
+        users = [get_user_model().objects.create(username=f'rot{i}')
+                 for i in range(200)]
+
+        def buckets():
+            result = set()
+            for user in users:
+                request = RequestFactory().get('/foo')
+                request.user = user
+                if waffle.flag_is_active(request, 'myflag'):
+                    result.add(user.pk)
+            return result
+
+        before = buckets()
+
+        # Rotate until the bucket assignment actually differs; a new salt
+        # may occasionally produce the same small set by chance.
+        changed = False
+        for _ in range(5):
+            flag.rotate_salt()
+            assert flag.salt != original_salt
+            flag.refresh_from_db()
+            if buckets() != before:
+                changed = True
+                break
+        assert changed
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_missing_identity_defaults_to_miss(self):
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='99.9')
+        response = process_request(get(), views.flag_in_view)
+        self.assertEqual(b'off', response.content)
+        assert 'dwf_myflag' not in response.cookies
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True,
+                       WAFFLE_ROLLOUT_MISSING_IDENTIFIER='cookie')
+    def test_stable_rollout_missing_identity_uses_cookie_path(self):
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='50.0')
+        response = process_request(get(), views.flag_in_view)
+        assert 'dwf_myflag' in response.cookies
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True,
+                       WAFFLE_ROLLOUT_MISSING_IDENTIFIER='cookie')
+    def test_stable_rollout_login_switch_uses_identity_key_only(self):
+        """After login, the prior anonymous cookie is never consulted."""
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='99.9')
+        user = get_user_model().objects.create(username='foo')
+
+        request = RequestFactory().get('/foo')
+        request.user = user
+        request.COOKIES['dwf_myflag'] = 'False'
+        response = process_request(request, views.flag_in_view)
+        # Identity-based decision, no rewrite of the anonymous cookie.
+        assert 'dwf_myflag' not in response.cookies
+
+        # Logout: cookie path resumes for the anonymous visitor and reads
+        # the untouched cookie rather than remembering the identity bucket.
+        anonymous_request = get()
+        anonymous_request.COOKIES['dwf_myflag'] = 'False'
+        response = process_request(anonymous_request, views.flag_in_view)
+        self.assertEqual(b'off', response.content)
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_respects_earlier_priorities(self):
+        """everyone/testing/users/groups still take precedence."""
+        user = get_user_model().objects.create(username='foo')
+
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='off', percent='99.9', everyone=False)
+        request = RequestFactory().get('/foo')
+        request.user = user
+        assert not waffle.flag_is_active(request, 'off')
+
+        targeted = waffle.get_waffle_flag_model().objects.create(
+            name='targeted', percent='0.0')
+        targeted.users.add(user)
+        request = RequestFactory().get('/foo')
+        request.user = user
+        assert waffle.flag_is_active(request, 'targeted')
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_custom_identifier(self):
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='50.0')
+        user = get_user_model().objects.create(username='foo')
+
+        def by_username(u, request):
+            return 'prefix:' + u.username
+
+        request = RequestFactory().get('/foo')
+        request.user = user
+        default_result = waffle.flag_is_active(request, 'myflag')
+
+        with override_settings(WAFFLE_ROLLOUT_IDENTIFIER=by_username):
+            request = RequestFactory().get('/foo')
+            request.user = user
+            custom_result = waffle.flag_is_active(request, 'myflag')
+
+        # Deterministic under either source; the custom source is used.
+        with override_settings(WAFFLE_ROLLOUT_IDENTIFIER=by_username):
+            request = RequestFactory().get('/foo')
+            request.user = user
+            assert waffle.flag_is_active(request, 'myflag') is custom_result
+        assert isinstance(default_result, bool)
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_empty_identifier_misses_without_cookie(self):
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='99.9')
+        user = get_user_model().objects.create(username='foo')
+        request = RequestFactory().get('/foo')
+        request.user = user
+
+        with override_settings(WAFFLE_ROLLOUT_IDENTIFIER='nonexistent_attr'):
+            response = process_request(request, views.flag_in_view)
+            self.assertEqual(b'off', response.content)
+            assert 'dwf_myflag' not in response.cookies
+
+    @override_settings(WAFFLE_STABLE_ROLLOUT=True)
+    def test_stable_rollout_read_only(self):
+        flag = waffle.get_waffle_flag_model().objects.create(
+            name='myflag', percent='50.0')
+        user = get_user_model().objects.create(username='foo')
+        request = RequestFactory().get('/foo')
+        request.user = user
+        result = flag.is_active(request, read_only=True)
+        assert isinstance(result, bool)
+
     def test_undefined(self):
         """Undefined flags are always false."""
         request = get()

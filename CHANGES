@@ -2,6 +2,17 @@
 Waffle Changelog
 ================
 
+v5.1.0
+======
+- Added stable percentage rollout: with ``WAFFLE_STABLE_ROLLOUT``, flags
+  bucket authenticated users by a configured identity and a per-flag salt
+  instead of re-sampling per request; increasing a percentage is monotonic.
+- Added a per-flag ``salt`` field, ``Flag.rotate_salt()`` and a
+  "Rotate rollout salt" admin action; ordinary flag saves never change the
+  salt or reshuffle users.
+- Added ``WAFFLE_ROLLOUT_IDENTIFIER``, ``WAFFLE_ROLLOUT_MISSING_IDENTIFIER``
+  and ``WAFFLE_ROLLOUT_BUCKET_COUNT`` settings.
+
 v5.0.0
 ======
 - Updated documentation

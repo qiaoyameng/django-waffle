@@ -23,6 +23,8 @@ The :ref:`flag_is_active <usage-views>` function takes two arguments, the
 request, and the name of a flag. Assuming this flag (``foo``) is defined
 in the database, Waffle will make roughly the following decisions:
 
+- Are the flag's :ref:`prerequisites <types-flag-prerequisites>` met?
+  If not, the flag is inactive.
 - Is ``WAFFLE_OVERRIDE`` active and if so does this request specify a
   value for this flag? If so, use that value.
 - If not, is the flag set to globally on or off (the *Everyone*
@@ -69,6 +71,9 @@ Flags can be administered through the Django `admin site`_ or the
     A list of user IDs for which this flag will always be active.
 :rollout:
     Activate Rollout mode? :ref:`See below <types-flag-rollout>`.
+:prerequisites:
+    Conditions on other Flags that must hold for this Flag to be
+    active. :ref:`See below <types-flag-prerequisites>`.
 :note:
     Describe where the flag is used.
 
@@ -78,6 +83,59 @@ Flag is active for superusers, a specific group, and 12% of visitors,
 then it will be active if the current user is a superuser *or* if they
 are in the group *or* if they are in the 12%.
 
+
+.. _types-flag-prerequisites:
+
+Flag Prerequisites
+==================
+
+A Flag can declare *prerequisites*: conditions on other Flags that must
+hold before the Flag can be active at all. Prerequisites are a hard
+gate — if they are not met, the Flag is inactive regardless of every
+other setting (including *Everyone*).
+
+Prerequisites are stored in the ``prerequisites`` attribute as a
+JSON document built from three kinds of nodes:
+
+:``{"flag": "name", "state": "on"|"off"}``:
+    A leaf condition requiring another Flag to be active (``on``, the
+    default) or inactive (``off``).
+:``{"all": [node, ...]}``:
+    All child nodes must hold (AND).
+:``{"any": [node, ...]}``:
+    At least one child node must hold (OR).
+
+Nodes can be nested arbitrarily. For example, a new payment flow that
+requires the base settlement flag and either the beta program or the
+legacy flow being off::
+
+    {
+        "all": [
+            {"flag": "base_settlement", "state": "on"},
+            {"any": [
+                {"flag": "payment_beta", "state": "on"},
+                {"flag": "legacy_payment", "state": "off"}
+            ]}
+        ]
+    }
+
+Evaluation semantics:
+
+- Results of prerequisite Flags are shared within a single request, so
+  each dependency is evaluated at most once per request (a diamond
+  dependency does not cause repeated evaluation). Nothing is cached
+  across requests or users.
+- ``all``/``any`` nodes short-circuit: branches that are not evaluated
+  do not activate their Flags, so they cannot set percent cookies or
+  otherwise affect the request.
+- Cycles are rejected when a Flag is saved (``ValidationError``). If a
+  cycle still appears at runtime — for example through a concurrent
+  configuration update — evaluation raises
+  ``waffle.prerequisites.PrerequisiteCycleError`` instead of recursing
+  forever.
+- A prerequisite that references a Flag that does not exist is handled
+  according to the ``WAFFLE_PREREQUISITE_UNKNOWN_FLAG`` setting: by
+  default the unknown Flag is treated as inactive (fail closed).
 
 .. note::
 

@@ -7,11 +7,13 @@ from typing import Any, TypeVar
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, Group
+from django.core.exceptions import ValidationError
 from django.db import models, router, transaction
 from django.http import HttpRequest
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
+from waffle import prerequisites as prereq
 from waffle import (
     get_waffle_sample_model,
     get_waffle_switch_model,
@@ -189,6 +191,17 @@ class AbstractBaseFlag(BaseModel):
         help_text=_('Activate roll-out mode?'),
         verbose_name=_('Rollout'),
     )
+    prerequisites = models.JSONField(
+        blank=True,
+        null=True,
+        default=None,
+        help_text=_(
+            'Prerequisites that must hold for this flag to be active, e.g. '
+            '{"all": [{"flag": "other_flag", "state": "on"}]}. '
+            'Nodes support "all" (AND), "any" (OR) and '
+            '{"flag": name, "state": "on"|"off"} leaves.'),
+        verbose_name=_('Prerequisites'),
+    )
     note = models.TextField(
         blank=True,
         help_text=_('Note where this Flag is used.'),
@@ -228,6 +241,33 @@ class AbstractBaseFlag(BaseModel):
             get_setting('ALL_FLAGS_CACHE_KEY'),
         ])
         return flush_keys
+
+    def clean(self) -> None:
+        super().clean()
+        self._validate_prerequisites()
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        # Guard against prerequisite cycles at save time. Cycles can
+        # still appear through concurrent updates or bulk queryset
+        # operations; those are caught at evaluation time instead.
+        self._validate_prerequisites()
+        super().save(*args, **kwargs)
+
+    def _validate_prerequisites(self) -> None:
+        if self.prerequisites is None:
+            return
+        prereq.validate_spec(self.prerequisites)
+        cycle = prereq.find_cycle(type(self), self.name, self.prerequisites)
+        if cycle:
+            raise ValidationError(
+                {'prerequisites':
+                 _('Prerequisite cycle detected: %(cycle)s')
+                 % {'cycle': ' -> '.join(cycle)}})
+
+    def _prerequisites_met(self, request: HttpRequest, read_only: bool) -> bool:
+        if not self.prerequisites:
+            return True
+        return prereq.evaluate_prerequisites(self, request, read_only=read_only)
 
     def is_active_for_user(self, user: AbstractBaseUser) -> bool | None:
         # According to the docs, everyone should override all the other settings
@@ -297,6 +337,11 @@ class AbstractBaseFlag(BaseModel):
                 cache.set(self._cache_key(self.name), flag)
 
             return get_setting('FLAG_DEFAULT')
+
+        # Prerequisites are a hard gate: if they are not met, the flag
+        # is inactive regardless of every other setting.
+        if not self._prerequisites_met(request, read_only):
+            return False
 
         if get_setting('OVERRIDE'):
             if self.name in request.GET:

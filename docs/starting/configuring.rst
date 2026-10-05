@@ -117,6 +117,14 @@ behavior.
     e.g. ``logging.WARNING``.
     Defaults to ``None``.
 
+``WAFFLE_PREREQUISITE_UNKNOWN_FLAG``
+    How to handle a flag :ref:`prerequisite <types-flag-prerequisites>`
+    that references a flag which does not exist. ``'inactive'`` treats
+    the unknown flag as inactive (fail closed); ``'error'`` raises
+    ``waffle.prerequisites.UnknownPrerequisiteFlagError`` during
+    evaluation.
+    Defaults to ``'inactive'``.
+
 
 ``WAFFLE_ENABLE_ADMIN_PAGES``
     Enables the default admin pages for Waffle models. This is True by default,

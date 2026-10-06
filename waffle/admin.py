@@ -10,7 +10,7 @@ from django.http import HttpRequest
 from django.utils.html import escape
 from django.utils.translation import gettext_lazy as _
 
-from waffle.models import Flag, Sample, Switch
+from waffle.models import ExperimentGroup, Flag, Sample, Switch
 from waffle.utils import get_setting
 
 
@@ -91,9 +91,10 @@ class InformativeManyToManyRawIdWidget(ManyToManyRawIdWidget):
 
 class FlagAdmin(BaseAdmin):
     actions = [enable_for_all, disable_for_all, delete_individually]
-    list_display = ('name', 'note', 'everyone', 'percent', 'superusers',
-                    'staff', 'authenticated', 'languages')
-    list_filter = ('everyone', 'superusers', 'staff', 'authenticated')
+    list_display = ('name', 'note', 'everyone', 'percent', 'experiment_group',
+                    'superusers', 'staff', 'authenticated', 'languages')
+    list_filter = ('everyone', 'superusers', 'staff', 'authenticated',
+                   'experiment_group')
     raw_id_fields = ('users', )
     ordering = ('-id',)
 
@@ -143,7 +144,13 @@ class SampleAdmin(BaseAdmin):
     ordering = ('-id',)
 
 
+class ExperimentGroupAdmin(BaseAdmin):
+    list_display = ('name', 'note', 'created', 'modified')
+    ordering = ('-id',)
+
+
 if get_setting('ENABLE_ADMIN_PAGES'):
     admin.site.register(Flag, FlagAdmin)
     admin.site.register(Sample, SampleAdmin)
     admin.site.register(Switch, SwitchAdmin)
+    admin.site.register(ExperimentGroup, ExperimentGroupAdmin)

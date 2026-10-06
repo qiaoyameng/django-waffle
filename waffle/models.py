@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 from decimal import Decimal
@@ -7,6 +8,7 @@ from typing import Any, TypeVar
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, Group
+from django.core.exceptions import ValidationError
 from django.db import models, router, transaction
 from django.http import HttpRequest
 from django.utils import timezone
@@ -129,6 +131,215 @@ def set_flag(request: HttpRequest, flag_name: str, active: bool | None = True, s
     request.waffles[flag_name] = [active, session_only]
 
 
+class ExperimentConflictError(Exception):
+    """Raised when several flags in one experiment group are forced active
+    for the same request and WAFFLE_EXPERIMENT_CONFLICT is 'error'."""
+
+
+class ExperimentGroup(BaseModel):
+    """A mutually exclusive experiment group.
+
+    All flags in a group share a single bucket space of 1000 buckets
+    (0.1% granularity). Each flag's percent defines a contiguous,
+    non-overlapping interval of buckets, allocated in flag-name order.
+    Buckets not covered by any flag are not part of the experiment, so
+    the total of all flag percents in a group may not exceed 100.
+
+    Because buckets derive from a stable hash of the group name and the
+    visitor's identity, changing one flag's percent only re-assigns the
+    buckets between the old and the new interval boundaries; every other
+    visitor keeps their previous assignment.
+    """
+
+    BUCKET_COUNT = 1000
+
+    name = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text=_('The human/computer readable name.'),
+        verbose_name=_('Name'),
+    )
+    note = models.TextField(
+        blank=True,
+        help_text=_('Note where this Experiment Group is used.'),
+        verbose_name=_('Note'),
+    )
+    created = models.DateTimeField(
+        default=timezone.now,
+        db_index=True,
+        help_text=_('Date when this Experiment Group was created.'),
+        verbose_name=_('Created'),
+    )
+    modified = models.DateTimeField(
+        default=timezone.now,
+        help_text=_('Date when this Experiment Group was last modified.'),
+        verbose_name=_('Modified'),
+    )
+
+    objects = managers.ExperimentGroupManager()
+
+    SINGLE_CACHE_KEY = 'EXPERIMENT_GROUP_CACHE_KEY'
+    ALL_CACHE_KEY = 'ALL_EXPERIMENT_GROUPS_CACHE_KEY'
+
+    class Meta:
+        verbose_name = _('Experiment Group')
+        verbose_name_plural = _('Experiment Groups')
+
+    def get_flags(self) -> list:
+        """Flags in this group, in deterministic (name) order."""
+        flag_model = get_waffle_flag_model()
+        return list(
+            flag_model.objects.filter(experiment_group=self).order_by('name')
+        )
+
+    def get_intervals(self, flags: list | None = None) -> list[tuple[Any, int, int]]:
+        """Contiguous (flag, start, end) bucket intervals in name order.
+
+        Buckets past the total percent are intentionally left over: they
+        are the part of the audience that does not take part in the
+        experiment.
+        """
+        intervals = []
+        start = 0
+        for flag in flags if flags is not None else self.get_flags():
+            percent = flag.percent or Decimal('0')
+            units = int((percent * 10).to_integral_value())
+            intervals.append((flag, start, start + units))
+            start += units
+        return intervals
+
+    def get_total_percent(self) -> Decimal:
+        return sum(
+            (flag.percent or Decimal('0')) for flag in self.get_flags()
+        )
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.pk:
+            return
+        total = self.get_total_percent()
+        if total > 100:
+            raise ValidationError(
+                _('The flag percents in this experiment group add up to '
+                  '%(total)s%%, which exceeds 100%%.'),
+                params={'total': total},
+            )
+
+    @classmethod
+    def get_bucket(cls, group_name: str, identity: str) -> int:
+        """Stable bucket for an identity, in [0, BUCKET_COUNT)."""
+        digest = hashlib.sha256(
+            f'{group_name}:{identity}'.encode('utf-8')
+        ).hexdigest()
+        return int(digest, 16) % cls.BUCKET_COUNT
+
+    def get_identity(self, request: HttpRequest) -> str | None:
+        user = getattr(request, 'user', None)
+        if user is not None and getattr(user, 'is_authenticated', False):
+            return f'user:{user.pk}'
+        session = getattr(request, 'session', None)
+        session_key = getattr(session, 'session_key', None)
+        if session_key:
+            return f'session:{session_key}'
+        return None
+
+    def _get_testing_override(self, flag: AbstractBaseFlag, request: HttpRequest) -> bool | None:
+        if not flag.testing:
+            return None
+        tc = get_setting('TEST_COOKIE') % flag.name
+        th = tc.replace('_', '-')
+        on = None
+        if tc in request.GET:
+            on = request.GET[tc] == '1'
+        elif th in request.headers:
+            on = request.headers[th] == '1'
+        if on is not None:
+            if not hasattr(request, 'waffle_tests'):
+                request.waffle_tests = {}
+            request.waffle_tests[flag.name] = on
+            return on
+        if tc in request.COOKIES:
+            return request.COOKIES[tc] == 'True'
+        return None
+
+    def _get_forced_and_excluded(self, request: HttpRequest, flags: list) -> tuple[list, set]:
+        """Flags forced on/off for this request by direct targeting.
+
+        Forced hits come from everyone, testing overrides, language and
+        user/group targeting, evaluated per flag. Flags forced off are
+        excluded: their interval stays in place (so other flags' buckets
+        do not move) but can never win.
+        """
+        forced = []
+        excluded = set()
+        for flag in flags:
+            if flag.everyone is not None:
+                if flag.everyone:
+                    forced.append(flag)
+                else:
+                    excluded.add(flag.name)
+                continue
+            testing_override = self._get_testing_override(flag, request)
+            if testing_override is not None:
+                if testing_override:
+                    forced.append(flag)
+                else:
+                    excluded.add(flag.name)
+                continue
+            if flag._is_active_for_language(request):
+                forced.append(flag)
+                continue
+            if flag._is_active_for_user(request):
+                forced.append(flag)
+        return forced, excluded
+
+    def get_assignment(self, request: HttpRequest) -> str | None:
+        """The name of the flag this request is assigned to, or None.
+
+        Deterministic per identity and memoized on the request, so calling
+        flag_is_active() for each flag in the group always agrees with
+        this result, regardless of call order.
+        """
+        if not hasattr(request, 'waffle_experiments'):
+            request.waffle_experiments = {}
+        if self.name in request.waffle_experiments:
+            return request.waffle_experiments[self.name]
+
+        assignment = self._compute_assignment(request)
+        request.waffle_experiments[self.name] = assignment
+        return assignment
+
+    def _compute_assignment(self, request: HttpRequest) -> str | None:
+        flags = self.get_flags()
+        forced, excluded = self._get_forced_and_excluded(request, flags)
+        if len(forced) > 1:
+            if get_setting('EXPERIMENT_CONFLICT') == 'error':
+                raise ExperimentConflictError(
+                    'Experiment group %r has multiple forced hits for this '
+                    'request: %s'
+                    % (self.name, ', '.join(f.name for f in forced))
+                )
+            # 'priority': flags are name-ordered, so the first one is a
+            # fixed, documented winner - never DB traversal order.
+            forced = forced[:1]
+        if forced:
+            return forced[0].name
+
+        identity = self.get_identity(request)
+        if identity is None:
+            # Anonymous visitor without a session: fall back to a random
+            # bucket, kept consistent within the request by the memo above.
+            bucket = random.randrange(self.BUCKET_COUNT)
+        else:
+            bucket = self.get_bucket(self.name, identity)
+        for flag, start, end in self.get_intervals(flags):
+            if flag.name in excluded:
+                continue
+            if start <= bucket < end:
+                return flag.name
+        return None
+
+
 class AbstractBaseFlag(BaseModel):
     """A feature flag.
 
@@ -189,6 +400,19 @@ class AbstractBaseFlag(BaseModel):
         help_text=_('Activate roll-out mode?'),
         verbose_name=_('Rollout'),
     )
+    experiment_group = models.ForeignKey(
+        ExperimentGroup,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='%(class)s_set',
+        help_text=_('Assign this flag to a mutually exclusive experiment '
+                    'group. Grouped flags share one bucket space: their '
+                    'percents are contiguous, non-overlapping intervals '
+                    'allocated in flag name order, and at most one grouped '
+                    'flag is active for any request.'),
+        verbose_name=_('Experiment Group'),
+    )
     note = models.TextField(
         blank=True,
         help_text=_('Note where this Flag is used.'),
@@ -228,6 +452,24 @@ class AbstractBaseFlag(BaseModel):
             get_setting('ALL_FLAGS_CACHE_KEY'),
         ])
         return flush_keys
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.experiment_group_id:
+            return
+        others = get_waffle_flag_model().objects.filter(
+            experiment_group=self.experiment_group,
+        ).exclude(pk=self.pk)
+        total = sum(
+            (flag.percent or Decimal('0')) for flag in others
+        ) + (self.percent or Decimal('0'))
+        if total > 100:
+            raise ValidationError({
+                'percent': _(
+                    'The flag percents in experiment group "%(group)s" '
+                    'would add up to %(total)s%%, which exceeds 100%%.'
+                ),
+            }, params={'group': self.experiment_group.name, 'total': total})
 
     def is_active_for_user(self, user: AbstractBaseUser) -> bool | None:
         # According to the docs, everyone should override all the other settings
@@ -301,6 +543,12 @@ class AbstractBaseFlag(BaseModel):
         if get_setting('OVERRIDE'):
             if self.name in request.GET:
                 return request.GET[self.name] == '1'
+
+        if self.experiment_group_id:
+            # Mutually exclusive experiment: the group decides which single
+            # flag (if any) is active, so independent flag_is_active()
+            # calls and waffle.experiment_result() always agree.
+            return self.experiment_group.get_assignment(request) == self.name
 
         if self.everyone:
             return True

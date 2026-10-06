@@ -4,7 +4,8 @@
 Types
 =====
 
-Waffle supports three types of feature flippers:
+Waffle supports three types of feature flippers, plus experiment groups
+for mutually exclusive rollouts:
 
 
 .. toctree::
@@ -13,3 +14,4 @@ Waffle supports three types of feature flippers:
    flag
    switch
    sample
+   experiment

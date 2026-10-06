@@ -6,7 +6,13 @@ from waffle.utils import get_setting, get_cache
 
 
 if TYPE_CHECKING:
-    from waffle.models import _BaseModelType, AbstractBaseFlag, AbstractBaseSample, AbstractBaseSwitch  # noqa: F401,PLC0415
+    from waffle.models import (  # noqa: F401,PLC0415
+        _BaseModelType,
+        AbstractBaseFlag,
+        AbstractBaseSample,
+        AbstractBaseSwitch,
+        ExperimentGroup,
+    )
 else:
     _BaseModelType = TypeVar("_BaseModelType")
 
@@ -27,6 +33,10 @@ class BaseManager(models.Manager, Generic[_BaseModelType]):
 
 class FlagManager(BaseManager['AbstractBaseFlag']):
     KEY_SETTING = 'ALL_FLAGS_CACHE_KEY'
+
+
+class ExperimentGroupManager(BaseManager['ExperimentGroup']):
+    KEY_SETTING = 'ALL_EXPERIMENT_GROUPS_CACHE_KEY'
 
 
 class SwitchManager(BaseManager['AbstractBaseSwitch']):

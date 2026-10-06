@@ -69,6 +69,10 @@ Flags can be administered through the Django `admin site`_ or the
     A list of user IDs for which this flag will always be active.
 :rollout:
     Activate Rollout mode? :ref:`See below <types-flag-rollout>`.
+:experiment_group:
+    Assign this flag to a mutually exclusive :ref:`experiment group
+    <types-experiment>`. Grouped flags share one bucket space and at
+    most one of them is active for any request.
 :note:
     Describe where the flag is used.
 

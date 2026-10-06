@@ -9,10 +9,18 @@ FLAG_CACHE_KEY = 'flag:%s'
 FLAG_USERS_CACHE_KEY = 'flag:%s:users'
 FLAG_GROUPS_CACHE_KEY = 'flag:%s:groups'
 ALL_FLAGS_CACHE_KEY = 'flags:all'
+EXPERIMENT_GROUP_CACHE_KEY = 'experiment:%s'
+ALL_EXPERIMENT_GROUPS_CACHE_KEY = 'experiments:all'
 SAMPLE_CACHE_KEY = 'sample:%s'
 ALL_SAMPLES_CACHE_KEY = 'samples:all'
 SWITCH_CACHE_KEY = 'switch:%s'
 ALL_SWITCHES_CACHE_KEY = 'switches:all'
+
+# How to resolve multiple forced hits (user/group targeting, language,
+# testing, everyone) inside one experiment group:
+#   'priority' - the flag that sorts first by name wins (deterministic).
+#   'error'    - raise waffle.models.ExperimentConflictError.
+EXPERIMENT_CONFLICT = 'priority'
 
 FLAG_DEFAULT = False
 SAMPLE_DEFAULT = False

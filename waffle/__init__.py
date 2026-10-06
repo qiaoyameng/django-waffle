@@ -19,6 +19,21 @@ def flag_is_active(request: HttpRequest, flag_name: str, read_only: bool = False
     return flag.is_active(request, read_only=read_only)
 
 
+def experiment_result(request: HttpRequest, group_name: str) -> str | None:
+    """Return the name of the flag this request is assigned to in the
+    experiment group, or None if it falls in an unassigned bucket.
+
+    This is consistent with calling flag_is_active() for each flag in the
+    group: at most one of them is active, and it is the one named here.
+    """
+    from waffle.models import ExperimentGroup
+
+    group = ExperimentGroup.get(group_name)
+    if not group.pk:
+        return None
+    return group.get_assignment(request)
+
+
 def switch_is_active(switch_name: str) -> bool:
     switch = get_waffle_switch_model().get(switch_name)
     return switch.is_active()

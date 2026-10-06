@@ -67,6 +67,27 @@ behavior.
     an update. Set this to ``True`` to ensure Waffle always reads Flags,
     Switches, and Samples from the DB configured for writes on cache misses.
 
+Transactional editing
+---------------------
+
+When several Waffle rows and their many-to-many relations must be committed
+as one unit, use ``waffle.transactions.atomic`` instead of calling the cache
+flush directly::
+
+    from waffle.transactions import atomic
+
+    with atomic():
+        flag.everyone = True
+        flag.save()
+        flag.users.add(user)
+
+Reads inside the context see the transaction's pending values, but those
+values are not stored in the shared cache. On commit, Waffle merges the
+necessary cache invalidations; rollback leaves the shared cache unchanged.
+Nested savepoint rollback only discards changes made inside that savepoint.
+Pass the database alias when using more than one database:
+``atomic(using='replica')``.
+
 ``WAFFLE_OVERRIDE``
     Allow *all* Flags to be controlled via the querystring (to allow
     e.g. Selenium to control their behavior). Defaults to ``False``.

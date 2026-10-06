@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
+from django.db import router
 from django.db import models
 
 from waffle.utils import get_setting, get_cache
@@ -18,11 +19,12 @@ class BaseManager(models.Manager, Generic[_BaseModelType]):
         return self.get(name=name)
 
     def create(self, *args: Any, **kwargs: Any) -> _BaseModelType:
-        cache = get_cache()
-        ret = super().create(*args, **kwargs)
-        cache_key = get_setting(self.KEY_SETTING)
-        cache.delete(cache_key)
-        return ret
+        using = kwargs.get('using')
+        obj = super().create(*args, **kwargs)
+        using = using or router.db_for_write(type(obj), instance=obj)
+        cache = get_cache(using)
+        cache.delete(get_setting(self.KEY_SETTING))
+        return obj
 
 
 class FlagManager(BaseManager['AbstractBaseFlag']):

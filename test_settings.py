@@ -32,7 +32,13 @@ DATABASES = {
     'readonly': {
         'NAME': 'test.readonly.db',
         'ENGINE': 'django.db.backends.sqlite3',
-    }
+    },
+    'transaction': {
+        'NAME': 'test.transaction.db',
+        'ENGINE': 'django.db.backends.sqlite3',
+        'OPTIONS': {'timeout': 1},
+        'TEST': {'NAME': 'test.transaction.test.db'},
+    },
 }
 
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'

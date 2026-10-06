@@ -18,6 +18,7 @@ from waffle import (
     get_waffle_flag_model,
     managers,
 )
+from waffle.transactions import get_transaction_cache
 from waffle.utils import get_setting, keyfmt, get_cache
 
 logger = logging.getLogger('waffle')
@@ -46,8 +47,15 @@ class BaseModel(models.Model):
         return keyfmt(get_setting(cls.SINGLE_CACHE_KEY), name)
 
     @classmethod
+    def _read_db(cls) -> str:
+        if get_setting('READ_FROM_WRITE_DB'):
+            return router.db_for_write(cls)
+        return router.db_for_read(cls)
+
+    @classmethod
     def get(cls: type[_BaseModelType], name: str) -> _BaseModelType:
-        cache = get_cache()
+        using = cls._read_db()
+        cache = get_cache(using)
         cache_key = cls._cache_key(name)
         cached = cache.get(cache_key)
         if cached == CACHE_EMPTY:
@@ -66,14 +74,13 @@ class BaseModel(models.Model):
 
     @classmethod
     def get_from_db(cls: type[_BaseModelType], name: str) -> _BaseModelType:
-        objects = cls.objects
-        if get_setting('READ_FROM_WRITE_DB'):
-            objects = objects.using(router.db_for_write(cls))
+        objects = cls.objects.using(cls._read_db())
         return objects.get(name=name)
 
     @classmethod
     def get_all(cls: type[_BaseModelType]) -> list[_BaseModelType]:
-        cache = get_cache()
+        using = cls._read_db()
+        cache = get_cache(using)
         cache_key = get_setting(cls.ALL_CACHE_KEY)
         cached = cache.get(cache_key)
         if cached == CACHE_EMPTY:
@@ -91,13 +98,10 @@ class BaseModel(models.Model):
 
     @classmethod
     def get_all_from_db(cls: type[_BaseModelType]) -> list[_BaseModelType]:
-        objects = cls.objects
-        if get_setting('READ_FROM_WRITE_DB'):
-            objects = objects.using(router.db_for_write(cls))
-        return list(objects.all())
+        return list(cls.objects.using(cls._read_db()).all())
 
-    def flush(self) -> None:
-        cache = get_cache()
+    def flush(self, using: str | None = None) -> None:
+        cache = get_cache(using or router.db_for_write(self.__class__, instance=self))
         keys = [
             self._cache_key(self.name),
             get_setting(self.ALL_CACHE_KEY),
@@ -107,18 +111,26 @@ class BaseModel(models.Model):
     def save(self, *args: Any, **kwargs: Any) -> None:
         self.modified = timezone.now()
         ret = super().save(*args, **kwargs)
-        if hasattr(transaction, 'on_commit'):
-            transaction.on_commit(self.flush)
+        using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
+        transaction_cache = get_transaction_cache(using)
+        if transaction_cache.active:
+            self.flush(using)
+        elif transaction.get_connection(using).in_atomic_block:
+            transaction.on_commit(lambda: self.flush(using), using=using)
         else:
-            self.flush()
+            self.flush(using)
         return ret
 
     def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
         ret = super().delete(*args, **kwargs)
-        if hasattr(transaction, 'on_commit'):
-            transaction.on_commit(self.flush)
+        using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
+        transaction_cache = get_transaction_cache(using)
+        if transaction_cache.active:
+            self.flush(using)
+        elif transaction.get_connection(using).in_atomic_block:
+            transaction.on_commit(lambda: self.flush(using), using=using)
         else:
-            self.flush()
+            self.flush(using)
         return ret
 
 
@@ -216,8 +228,8 @@ class AbstractBaseFlag(BaseModel):
         verbose_name = _('Flag')
         verbose_name_plural = _('Flags')
 
-    def flush(self) -> None:
-        cache = get_cache()
+    def flush(self, using: str | None = None) -> None:
+        cache = get_cache(using or router.db_for_write(self.__class__, instance=self))
         keys = self.get_flush_keys()
         cache.delete_many(keys)
 
@@ -287,14 +299,15 @@ class AbstractBaseFlag(BaseModel):
             if log_level:
                 logger.log(log_level, 'Flag %s not found', self.name)
             if get_setting('CREATE_MISSING_FLAGS'):
-                flag, _created = get_waffle_flag_model().objects.get_or_create(
+                flag_model = get_waffle_flag_model()
+                using = router.db_for_write(flag_model)
+                flag, _created = flag_model.objects.using(using).get_or_create(
                     name=self.name,
                     defaults={
                         'everyone': get_setting('FLAG_DEFAULT')
                     }
                 )
-                cache = get_cache()
-                cache.set(self._cache_key(self.name), flag)
+                get_cache(using).set(self._cache_key(self.name), flag)
 
             return get_setting('FLAG_DEFAULT')
 
@@ -381,7 +394,8 @@ class AbstractUserFlag(AbstractBaseFlag):
     def _prefetch_user_group_ids(cls, flags: list) -> dict[str, dict[str, set]]:
         if not flags:
             return {}
-        cache = get_cache()
+        using = cls._read_db()
+        cache = get_cache(using)
         user_key_fmt = get_setting('FLAG_USERS_CACHE_KEY')
         group_key_fmt = get_setting('FLAG_GROUPS_CACHE_KEY')
         user_keys = [keyfmt(user_key_fmt, f.name) for f in flags]
@@ -398,7 +412,8 @@ class AbstractUserFlag(AbstractBaseFlag):
     def _get_user_ids(self) -> set[Any]:
         if self._prefetched_user_ids is not None:
             return self._prefetched_user_ids
-        cache = get_cache()
+        using = router.db_for_read(self.users.through, instance=self)
+        cache = get_cache(using)
         cache_key = keyfmt(get_setting('FLAG_USERS_CACHE_KEY'), self.name)
         cached = cache.get(cache_key)
         if cached == CACHE_EMPTY:
@@ -417,7 +432,8 @@ class AbstractUserFlag(AbstractBaseFlag):
     def _get_group_ids(self) -> set[Any]:
         if self._prefetched_group_ids is not None:
             return self._prefetched_group_ids
-        cache = get_cache()
+        using = router.db_for_read(self.groups.through, instance=self)
+        cache = get_cache(using)
         cache_key = keyfmt(get_setting('FLAG_GROUPS_CACHE_KEY'), self.name)
         cached = cache.get(cache_key)
         if cached == CACHE_EMPTY:
@@ -515,11 +531,12 @@ class AbstractBaseSwitch(BaseModel):
             if log_level:
                 logger.log(log_level, 'Switch %s not found', self.name)
             if get_setting('CREATE_MISSING_SWITCHES'):
-                switch, _created = get_waffle_switch_model().objects.get_or_create(
+                switch_model = get_waffle_switch_model()
+                using = router.db_for_write(switch_model)
+                switch, _created = switch_model.objects.using(using).get_or_create(
                     name=self.name, defaults={"active": get_setting("SWITCH_DEFAULT")}
                 )
-                cache = get_cache()
-                cache.set(self._cache_key(self.name), switch)
+                get_cache(using).set(self._cache_key(self.name), switch)
 
             return get_setting('SWITCH_DEFAULT')
 
@@ -580,14 +597,15 @@ class AbstractBaseSample(BaseModel):
             if log_level:
                 logger.log(log_level, 'Sample %s not found', self.name)
             if get_setting('CREATE_MISSING_SAMPLES'):
+                sample_model = get_waffle_sample_model()
+                using = router.db_for_write(sample_model)
 
                 default_percent = 100 if get_setting('SAMPLE_DEFAULT') else 0
 
-                sample, _created = get_waffle_sample_model().objects.get_or_create(
+                sample, _created = sample_model.objects.using(using).get_or_create(
                     name=self.name, defaults={"percent": default_percent}
                 )
-                cache = get_cache()
-                cache.set(self._cache_key(self.name), sample)
+                get_cache(using).set(self._cache_key(self.name), sample)
 
             return get_setting('SAMPLE_DEFAULT')
         return Decimal(str(random.uniform(0, 100))) <= self.percent

@@ -10,7 +10,7 @@ from django.http import HttpRequest
 from django.utils.html import escape
 from django.utils.translation import gettext_lazy as _
 
-from waffle.models import Flag, Sample, Switch
+from waffle.models import Flag, FlagGroup, FlagGroupMembership, Sample, Switch
 from waffle.utils import get_setting
 
 
@@ -143,7 +143,21 @@ class SampleAdmin(BaseAdmin):
     ordering = ('-id',)
 
 
+class FlagGroupMembershipInline(admin.TabularInline):
+    model = FlagGroupMembership
+    extra = 0
+    ordering = ('priority', 'flag__name')
+
+
+class FlagGroupAdmin(BaseAdmin):
+    list_display = ('name', 'on_conflict', 'note', 'modified')
+    list_filter = ('on_conflict',)
+    inlines = [FlagGroupMembershipInline]
+    ordering = ('-id',)
+
+
 if get_setting('ENABLE_ADMIN_PAGES'):
     admin.site.register(Flag, FlagAdmin)
     admin.site.register(Sample, SampleAdmin)
     admin.site.register(Switch, SwitchAdmin)
+    admin.site.register(FlagGroup, FlagGroupAdmin)

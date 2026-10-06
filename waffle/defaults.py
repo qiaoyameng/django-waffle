@@ -1,5 +1,6 @@
 COOKIE = 'dwf_%s'
 TEST_COOKIE = 'dwft_%s'
+GROUP_COOKIE = 'dwfg_%s'
 SECURE = True
 MAX_AGE = 2592000  # 1 month in seconds
 
@@ -9,6 +10,10 @@ FLAG_CACHE_KEY = 'flag:%s'
 FLAG_USERS_CACHE_KEY = 'flag:%s:users'
 FLAG_GROUPS_CACHE_KEY = 'flag:%s:groups'
 ALL_FLAGS_CACHE_KEY = 'flags:all'
+ALL_FLAG_GROUPS_CACHE_KEY = 'flaggroups:all'
+FLAG_GROUP_CACHE_KEY = 'flaggroup:%s'
+FLAG_GROUP_MEMBERS_CACHE_KEY = 'flaggroup:%s:members'
+FLAG_MEMBERSHIP_CACHE_KEY = 'flag:%s:groupmembership'
 SAMPLE_CACHE_KEY = 'sample:%s'
 ALL_SAMPLES_CACHE_KEY = 'samples:all'
 SWITCH_CACHE_KEY = 'switch:%s'

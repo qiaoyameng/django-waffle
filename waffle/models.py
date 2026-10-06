@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, Group
 from django.db import models, router, transaction
+from django.core.exceptions import ValidationError
 from django.http import HttpRequest
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -281,6 +282,66 @@ class AbstractBaseFlag(BaseModel):
 
         return None
 
+    def forced_value(self, request: HttpRequest) -> bool | None:
+        """Return the flag's deterministic (non-bucket) value for this request.
+
+        Targeting and testing overrides only -- never consults the random
+        percentage/cookie bucket. Returns ``None`` when the flag does not
+        force a result for this request.
+        """
+        if get_setting('OVERRIDE'):
+            if self.name in request.GET:
+                return request.GET[self.name] == '1'
+
+        if self.everyone is not None:
+            return self.everyone
+
+        if self.testing:
+            tc = get_setting('TEST_COOKIE') % self.name
+            th = tc.replace('_', '-')
+            on = None
+            if tc in request.GET:
+                on = request.GET[tc] == '1'
+            elif th in request.headers:
+                on = request.headers[th] == '1'
+            if on is not None:
+                return on
+            if tc in request.COOKIES:
+                return request.COOKIES[tc] == 'True'
+
+        active_for_language = self._is_active_for_language(request)
+        if active_for_language is not None:
+            return active_for_language
+
+        active_for_user = self._is_active_for_user(request)
+        if active_for_user is not None:
+            return active_for_user
+
+        return None
+
+    def get_group_membership(self) -> "FlagGroupMembership | None":
+        """Return this flag's experiment-group membership, if any."""
+        if not self.pk:
+            return None
+        cache = get_cache()
+        cache_key = keyfmt(get_setting('FLAG_MEMBERSHIP_CACHE_KEY'), self.name)
+        cached = cache.get(cache_key)
+        if cached == CACHE_EMPTY:
+            return None
+        if cached:
+            return cached
+
+        try:
+            membership = FlagGroupMembership.objects.select_related(
+                'group', 'flag'
+            ).get(flag_id=self.pk)
+        except FlagGroupMembership.DoesNotExist:
+            cache.add(cache_key, CACHE_EMPTY)
+            return None
+
+        cache.add(cache_key, membership)
+        return membership
+
     def is_active(self, request: HttpRequest, read_only: bool = False) -> bool | None:
         if not self.pk:
             log_level = get_setting('LOG_MISSING_FLAGS')
@@ -295,8 +356,25 @@ class AbstractBaseFlag(BaseModel):
                 )
                 cache = get_cache()
                 cache.set(self._cache_key(self.name), flag)
+                cache.set(
+                    keyfmt(get_setting('FLAG_MEMBERSHIP_CACHE_KEY'),
+                           self.name),
+                    CACHE_EMPTY,
+                )
 
             return get_setting('FLAG_DEFAULT')
+
+        # A flag that belongs to a mutually exclusive experiment group is
+        # resolved through the shared bucket space. This guarantees that
+        # independent calls for any of the group's flags agree with a single
+        # group evaluation, regardless of call order.
+        membership = self.get_group_membership()
+        if membership is not None:
+            from waffle import groups
+            decision = groups.evaluate_group(
+                request, membership.group, read_only=read_only
+            )
+            return decision.active and decision.flag_name == self.name
 
         if get_setting('OVERRIDE'):
             if self.name in request.GET:
@@ -366,6 +444,13 @@ class AbstractUserFlag(AbstractBaseFlag):
             keyfmt(get_setting('FLAG_USERS_CACHE_KEY'), self.name),
             keyfmt(get_setting('FLAG_GROUPS_CACHE_KEY'), self.name),
         ])
+        membership = self.get_group_membership()
+        if membership is not None:
+            flush_keys.extend([
+                keyfmt(get_setting('FLAG_MEMBERSHIP_CACHE_KEY'), self.name),
+                keyfmt(get_setting('FLAG_GROUP_MEMBERS_CACHE_KEY'),
+                       membership.group.name),
+            ])
         return flush_keys
 
     @classmethod
@@ -462,6 +547,203 @@ class Flag(AbstractUserFlag):
         swappable = 'WAFFLE_FLAG_MODEL'
         verbose_name = _('Flag')
         verbose_name_plural = _('Flags')
+
+
+class FlagGroup(BaseModel):
+    """A mutually exclusive experiment group.
+
+    Every member flag owns a non-overlapping interval inside the group's
+    shared 0-100% bucket space. Buckets beyond the sum of the member
+    percentages do not take part in the experiment (no variant is active).
+    """
+
+    class ConflictPolicy(models.TextChoices):
+        REJECT = 'reject', _('Reject (no variant wins)')
+        PRIORITY = 'priority', _('Fixed priority wins')
+
+    name = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text=_('The human/computer readable name.'),
+        verbose_name=_('Name'),
+    )
+    on_conflict = models.CharField(
+        max_length=20,
+        choices=ConflictPolicy.choices,
+        default=ConflictPolicy.REJECT,
+        help_text=_(
+            'What happens when targeting rules force more than one variant '
+            'for the same request: reject all of them, or use the variant '
+            'with the lowest fixed priority (ties broken by flag name).'),
+        verbose_name=_('Conflict policy'),
+    )
+    note = models.TextField(
+        blank=True,
+        help_text=_('Note where this flag group is used.'),
+        verbose_name=_('Note'),
+    )
+    created = models.DateTimeField(
+        default=timezone.now,
+        db_index=True,
+        help_text=_('Date when this flag group was created.'),
+        verbose_name=_('Created'),
+    )
+    modified = models.DateTimeField(
+        default=timezone.now,
+        help_text=_('Date when this flag group was last modified.'),
+        verbose_name=_('Modified'),
+    )
+
+    SINGLE_CACHE_KEY = 'FLAG_GROUP_CACHE_KEY'
+    ALL_CACHE_KEY = 'ALL_FLAG_GROUPS_CACHE_KEY'
+
+    class Meta:
+        verbose_name = _('Flag group')
+        verbose_name_plural = _('Flag groups')
+
+    def flush(self) -> None:
+        cache = get_cache()
+        keys = [
+            self._cache_key(self.name),
+            get_setting(self.ALL_CACHE_KEY),
+            keyfmt(get_setting('FLAG_GROUP_MEMBERS_CACHE_KEY'), self.name),
+        ]
+        for membership in self.memberships.all():
+            keys.append(
+                keyfmt(get_setting('FLAG_MEMBERSHIP_CACHE_KEY'),
+                       membership.flag.name)
+            )
+        cache.delete_many(keys)
+
+    def get_memberships(self) -> list["FlagGroupMembership"]:
+        if not self.pk:
+            return []
+
+        cache = get_cache()
+        cache_key = keyfmt(
+            get_setting('FLAG_GROUP_MEMBERS_CACHE_KEY'), self.name
+        )
+        cached = cache.get(cache_key)
+        if cached == CACHE_EMPTY:
+            return []
+        if cached:
+            return cached
+
+        memberships = list(
+            self.memberships
+            .select_related('flag', 'group')
+            .order_by('priority', 'flag__name')
+        )
+        if not memberships:
+            cache.add(cache_key, CACHE_EMPTY)
+            return []
+
+        cache.add(cache_key, memberships)
+        return memberships
+
+    def intervals(
+        self, bucket_count: int | None = None
+    ) -> list[tuple["FlagGroupMembership", int, int]]:
+        """Member intervals as ``(membership, start, end)`` bucket ranges.
+
+        ``end`` is exclusive. Intervals are laid out in the deterministic
+        ``(priority, flag name)`` order, never in database traversal order,
+        so allocation changes stay explainable.
+        """
+        from waffle.groups import BUCKET_COUNT
+        if bucket_count is None:
+            bucket_count = BUCKET_COUNT
+
+        intervals = []
+        cursor = 0
+        for membership in self.get_memberships():
+            width = int(round(
+                (membership.percent / Decimal('100')) * bucket_count
+            ))
+            intervals.append((membership, cursor, cursor + width))
+            cursor += width
+        return intervals
+
+
+class FlagGroupMembership(models.Model):
+    """Assigns a flag to an experiment group with a percentage interval."""
+
+    group = models.ForeignKey(
+        FlagGroup,
+        on_delete=models.CASCADE,
+        related_name='memberships',
+        verbose_name=_('Group'),
+    )
+    flag = models.OneToOneField(
+        get_setting('FLAG_MODEL', 'waffle.Flag'),
+        on_delete=models.CASCADE,
+        related_name='group_membership',
+        verbose_name=_('Flag'),
+    )
+    percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        help_text=_('Share of the group bucket space (0.00 to 100.00). '
+                    'The sum across the group may not exceed 100.00.'),
+        verbose_name=_('Percent'),
+    )
+    priority = models.PositiveIntegerField(
+        default=0,
+        help_text=_(
+            'Fixed priority for forced-hit conflicts: lower numbers win. '
+            'Ties are broken by flag name, never by database order.'),
+        verbose_name=_('Priority'),
+    )
+
+    class Meta:
+        verbose_name = _('Flag group membership')
+        verbose_name_plural = _('Flag group memberships')
+        ordering = ('priority', 'flag__name')
+
+    def __str__(self) -> str:
+        return f'{self.flag.name} in {self.group.name} ({self.percent}%)'
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        percent = Decimal(str(self.percent))
+        if percent < 0 or percent > 100:
+            raise ValidationError(
+                _('Group membership percentage must be between 0 and 100.')
+            )
+
+        others = FlagGroupMembership.objects.filter(group=self.group_id)
+        if self.pk:
+            others = others.exclude(pk=self.pk)
+        total = sum(
+            (Decimal(str(value)) for value in others.values_list(
+                'percent', flat=True)),
+            Decimal('0'),
+        )
+        if total + percent > Decimal('100'):
+            raise ValidationError(
+                _('Group percentages may not exceed 100%% in total; '
+                  'other flags already use %(used)s%%.'),
+                params={'used': total},
+            )
+
+        ret = super().save(*args, **kwargs)
+        if hasattr(transaction, 'on_commit'):
+            transaction.on_commit(self.group.flush)
+        else:
+            self.group.flush()
+        return ret
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        group = self.group
+        flag_membership_key = keyfmt(
+            get_setting('FLAG_MEMBERSHIP_CACHE_KEY'), self.flag.name
+        )
+        ret = super().delete(*args, **kwargs)
+        get_cache().delete(flag_membership_key)
+        if hasattr(transaction, 'on_commit'):
+            transaction.on_commit(group.flush)
+        else:
+            group.flush()
+        return ret
 
 
 class AbstractBaseSwitch(BaseModel):

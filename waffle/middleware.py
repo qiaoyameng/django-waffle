@@ -27,4 +27,13 @@ class WaffleMiddleware(MiddlewareMixin):
                 value = request.waffle_tests[k]
                 response.set_cookie(name, value=value)
 
+        if hasattr(request, 'waffle_groups'):
+            for name, value in request.waffle_groups.items():
+                response.set_cookie(
+                    smart_str(name),
+                    value=value,
+                    max_age=max_age,
+                    secure=secure,
+                )
+
         return response

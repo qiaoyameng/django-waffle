@@ -13,6 +13,7 @@ JavaScript.
    :titlesonly:
 
    views
+   flag_groups
    decorators
    mixins
    templates

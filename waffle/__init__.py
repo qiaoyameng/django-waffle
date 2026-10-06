@@ -10,6 +10,7 @@ from django.apps import apps as django_apps
 
 if TYPE_CHECKING:
     from waffle.models import AbstractBaseFlag, AbstractBaseSample, AbstractBaseSwitch
+    from waffle.groups import GroupDecision
 
 __version__ = '5.0.0'
 
@@ -29,6 +30,25 @@ def sample_is_active(sample_name: str) -> bool:
     return sample.is_active()
 
 
+def flag_group_result(request: HttpRequest, group_name: str,
+                      identity: str | None = None,
+                      read_only: bool = False) -> "GroupDecision":
+    """Evaluate a mutually exclusive experiment group in one call.
+
+    Independent ``flag_is_active`` calls for any of the group's flags use the
+    very same evaluation, so callers never need to remember which flag to
+    check first.
+    """
+    from waffle.groups import Assignment, evaluate_group
+    group = get_waffle_flag_group_model().get(group_name)
+    if not group.pk:
+        from waffle.groups import GroupDecision
+        return GroupDecision(
+            group_name=group_name, reason=Assignment.MISSING_GROUP)
+    return evaluate_group(request, group, identity=identity,
+                          read_only=read_only)
+
+
 def get_waffle_flag_model() -> type[AbstractBaseFlag]:
     return get_waffle_model('FLAG_MODEL')
 
@@ -39,6 +59,11 @@ def get_waffle_switch_model() -> type[AbstractBaseSwitch]:
 
 def get_waffle_sample_model() -> type[AbstractBaseSample]:
     return get_waffle_model('SAMPLE_MODEL')
+
+
+def get_waffle_flag_group_model():
+    from waffle.models import FlagGroup
+    return FlagGroup
 
 
 def get_waffle_model(setting_name: str) -> (

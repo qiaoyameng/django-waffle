@@ -67,6 +67,28 @@ behavior.
     an update. Set this to ``True`` to ensure Waffle always reads Flags,
     Switches, and Samples from the DB configured for writes on cache misses.
 
+Transactional cache edits
+-------------------------
+
+Wraps a transaction in a private cache layer. Reads made by the editing
+database connection observe its uncommitted values, but those values are never
+written to the shared cache. When the transaction commits, Waffle publishes only
+the consolidated cache invalidations; if it rolls back, nothing is published.
+
+::
+
+    import waffle
+
+    with waffle.atomic():
+        flag.everyone = True
+        flag.save()
+        flag.users.add(user)
+        flag.groups.add(group)
+
+Nested savepoints are supported. Rolling back an inner savepoint discards only
+that layer's private cache changes while the outer transaction remains usable.
+Cache layers are maintained separately for each Django database alias.
+
 ``WAFFLE_OVERRIDE``
     Allow *all* Flags to be controlled via the querystring (to allow
     e.g. Selenium to control their behavior). Defaults to ``False``.

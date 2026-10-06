@@ -139,7 +139,8 @@ Example:
 
     # models.py
     from waffle.models import AbstractUserFlag, CACHE_EMPTY
-    from waffle.utils import get_setting, keyfmt, get_cache
+    from waffle import transactions
+    from waffle.utils import get_setting, keyfmt
 
     class Flag(AbstractUserFlag):
         FLAG_COMPANIES_CACHE_KEY = 'FLAG_COMPANIES_CACHE_KEY'
@@ -168,7 +169,7 @@ Example:
                     return True
 
         def _get_company_ids(self):
-            cache = get_cache()
+            cache = transactions.get_cache(self._db_alias_for_read())
             cache_key = keyfmt(
                 get_setting(Flag.FLAG_COMPANIES_CACHE_KEY, Flag.FLAG_COMPANIES_CACHE_KEY_DEFAULT),
                 self.name
@@ -179,7 +180,9 @@ Example:
             if cached:
                 return cached
 
-            company_ids = set(self.companies.all().values_list('pk', flat=True))
+            company_ids = set(
+                self.companies.using(self._db_alias_for_read()).all().values_list('pk', flat=True)
+            )
             if not company_ids:
                 cache.add(cache_key, CACHE_EMPTY)
                 return set()

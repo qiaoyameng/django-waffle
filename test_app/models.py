@@ -4,9 +4,8 @@ from django.db.models import CASCADE
 from django.utils.translation import gettext_lazy as _
 
 from waffle.models import AbstractBaseSample, AbstractBaseSwitch, AbstractUserFlag, CACHE_EMPTY
-from waffle.utils import get_setting, keyfmt, get_cache
-
-cache = get_cache()
+from waffle import transactions
+from waffle.utils import get_setting, keyfmt
 
 
 class Company(models.Model):
@@ -66,13 +65,16 @@ class CompanyAwareFlag(AbstractUserFlag):
             get_setting(CompanyAwareFlag.FLAG_COMPANIES_CACHE_KEY, CompanyAwareFlag.FLAG_COMPANIES_CACHE_KEY_DEFAULT),
             self.name
         )
+        cache = transactions.get_cache(self._db_alias_for_read())
         cached = cache.get(cache_key)
         if cached == CACHE_EMPTY:
             return set()
         if cached:
             return cached
 
-        company_ids = set(self.companies.all().values_list('pk', flat=True))
+        company_ids = set(
+            self.companies.using(self._db_alias_for_read()).all().values_list('pk', flat=True)
+        )
         if not company_ids:
             cache.add(cache_key, CACHE_EMPTY)
             return set()

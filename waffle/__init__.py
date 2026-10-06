@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 
+from waffle.transactions import atomic
 from waffle.utils import get_setting
 from django.apps import apps as django_apps
 
